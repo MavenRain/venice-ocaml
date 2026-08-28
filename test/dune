@@ -1,0 +1,9 @@
+(test
+ (name test_codec)
+ (modules test_codec)
+ (libraries venice))
+
+(test
+ (name test_bytes)
+ (modules test_bytes)
+ (libraries venice))

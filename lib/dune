@@ -1,0 +1,4 @@
+(library
+ (name venice)
+ (public_name venice_ocaml)
+ (modules venice errx bytesx hexx b64x))

@@ -1,0 +1,15 @@
+opam-version: "2.0"
+synopsis: "Typed Venice.ai SDK with client-side TEE attestation"
+description:
+  "Venice.ai client where the type system carries the guarantees: capability phantom rows make illegal requests unrepresentable, streaming runs through OCaml 5 effect handlers, and a client-side TDX quote verifier mints the witness that E2EE session establishment requires."
+maintainer: "Onyeka Obi"
+authors: "Onyeka Obi"
+license: "MIT OR Apache-2.0"
+depends: [
+  "ocaml" {>= "5.1"}
+  "dune" {>= "3.0"}
+  "sha2"
+]
+build: [
+  ["dune" "build" "-p" name "-j" jobs]
+]
