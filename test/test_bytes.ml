@@ -45,6 +45,7 @@ let checks : (string * bool) list =
     ("take negative offset", C.take buf (-1) 1 = None);
     ("take negative len", C.take buf 3 (-1) = None);
     ("take huge offset", C.take buf max_int 1 = None);
+    ("take huge len none", C.take buf 5 max_int = None);
     ("u8 huge offset", C.u8 buf max_int = None)
   ]
 

@@ -7,3 +7,4 @@ module Error = Errx
 module Cursor = Bytesx
 module Hex = Hexx
 module B64 = B64x
+module Json = Jsonx

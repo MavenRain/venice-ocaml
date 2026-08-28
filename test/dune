@@ -7,3 +7,8 @@
  (name test_bytes)
  (modules test_bytes)
  (libraries venice))
+
+(test
+ (name test_jsonx)
+ (modules test_jsonx)
+ (libraries venice))

@@ -99,7 +99,7 @@ let decode_core (m : int Cmap.t) (chars : char list) :
         Ok
           (Bytesx.of_codes
              (List.rev
-                (((b lsl 4) lor (c lsr 2))
+                ((((b land 15) lsl 4) lor (c lsr 2))
                 :: ((a lsl 2) lor (b lsr 4))
                 :: out_rev)))
       else bad "non-zero trailing bits"

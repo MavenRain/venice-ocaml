@@ -56,7 +56,9 @@ let hex_checks : (string * bool) list =
     ("hex odd is typed",
      hdec "abc" = Error (Venice.Error.Hex_invalid "odd length"));
     ("hex foreign is typed",
-     hdec "zz" = Error (Venice.Error.Hex_invalid "byte outside alphabet"))
+     hdec "zz" = Error (Venice.Error.Hex_invalid "byte outside alphabet"));
+    ("hex slot pin enc 0102", String.equal (henc "\x01\x02") "0102");
+    ("hex slot pin dec 0102", hdec "0102" = Ok "\x01\x02")
   ]
 
 let url_checks : (string * bool) list =
@@ -81,6 +83,10 @@ let url_checks : (string * bool) list =
     ("url reject trailing bits 2char", udec_fails "Zh");
     ("url reject trailing bits 3char", udec_fails "Zm9");
     ("url accept canonical 3char", udec "Zm8" = Ok "fo");
+    ("url reject trailing nibble ZE", udec_fails "ZE");
+    ("url reject trailing 2 bits ZmC", udec_fails "ZmC");
+    ("url enc zero byte AA", String.equal (uenc "\x00") "AA");
+    ("url dec zero byte AA", udec "AA" = Ok "\x00");
     ("url padding is typed",
      udec "=" = Error (Venice.Error.B64_invalid "byte outside alphabet"))
   ]
@@ -113,7 +119,8 @@ let std_checks : (string * bool) list =
     ("std reject trailing bits 3char", sdec_fails "Zm9=");
     ("std missing padding is typed",
      sdec "Zg" = Error (Venice.Error.B64_invalid "missing padding"));
-    ("std pad only rejects", sdec_fails "====")
+    ("std pad only rejects", sdec_fails "====");
+    ("std enc zero byte AA", String.equal (senc "\x00") "AA==")
   ]
 
 let () = run (List.concat [ hex_checks; url_checks; std_checks ])
