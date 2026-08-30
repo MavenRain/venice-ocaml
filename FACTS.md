@@ -8,11 +8,26 @@ live probe confirms it (M2 pins the probe fixtures). Re-verify on SDK bumps.
 - OpenAI-compatible: `/chat/completions` (SSE streaming), `/models` (query
   param `type` in {text, code, image, embedding, tts, asr, music, upscale,
   inpaint, video, all}), `/embeddings`, image/audio/video endpoints.
-- `venice_parameters` request object: `enable_web_search`,
-  `enable_web_scraping`, `enable_x_search`, `enable_web_citations`,
-  `include_search_results_in_stream`, `return_search_results_as_documents`,
-  `include_venice_system_prompt`, `character_slug`,
-  `strip_thinking_response`, `disable_thinking`, `prompt_cache_key`.
+- `venice_parameters` request object (swagger 2026-08-30, saved at
+  `~/Documents/venice-swagger.yaml`): `character_slug` (string),
+  `strip_thinking_response` (bool, default false), `disable_thinking`
+  (bool, default false), `enable_e2ee` (bool, default true; false runs
+  an E2EE-capable model TEE-only even when E2EE headers are present, so
+  it is a downgrade lever), `enable_web_search` (string enum
+  auto | off | on, default off), `enable_web_scraping` (bool, false),
+  `enable_web_citations` (bool, false),
+  `include_search_results_in_stream` (bool, false),
+  `return_search_results_as_documents` (bool, no default),
+  `include_venice_system_prompt` (bool, default true),
+  `enable_x_search` (bool, false). CORRECTION to the 2026-08-27 digest:
+  `prompt_cache_key` (string) and `prompt_cache_retention` (string) are
+  TOP-LEVEL chat request members, not venice_parameters members.
+- Sampling windows on the chat request (swagger, inclusive edges):
+  `temperature` number 0..2, `top_p` number 0..1, `frequency_penalty`
+  number -2..2 default 0, `presence_penalty` number -2..2 default 0,
+  `repetition_penalty` number >= 0 no maximum (1.0 = no penalty),
+  `top_k` integer >= 0, `max_tokens` / `max_completion_tokens` integers
+  with no schema bounds (model window is the real cap, M9).
 
 ## Response headers
 - Rate limits: `x-ratelimit-limit-requests`, `x-ratelimit-remaining-requests`,
@@ -37,8 +52,15 @@ live probe confirms it (M2 pins the probe fixtures). Re-verify on SDK bumps.
   `supportsWebSearch`, `supportsLogProbs`, `supportsTeeAttestation`,
   `supportsE2EE`, `supportsXSearch`; `quantization` (fp4 fp8 fp16 bf16
   int8 int4 not-available); `reasoningEffortOptions?`.
-- `constraints` (text): temperature, top_p, frequency_penalty,
-  presence_penalty, repetition_penalty, each with defaults.
+- `constraints` (text, swagger "Text Model Constraints"): per-parameter
+  objects holding ONLY a required `default` number: `temperature` and
+  `top_p` are required members, `frequency_penalty`,
+  `presence_penalty`, `repetition_penalty` optional. No per-model
+  min/max exists; the request window above is the only bound. Image
+  models use a different shape (`promptCharacterLimit`, `steps`
+  {default, max}, `widthHeightDivisor`, `maxStyleReferences`, ...) and
+  video models another (`aspect_ratios`, `resolutions`, `durations`
+  string arrays), so a typed text view must not reject foreign keys.
 - `pricing`: input/output usd + diem per million tokens; `cache_input?`,
   `cache_write?`, `extended?` long-context tier.
 - Example TEE/E2EE slugs: `e2ee-qwen3-5-122b-a10b`, `e2ee-glm-5`.

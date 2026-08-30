@@ -10,7 +10,7 @@ cd "$here"
 dunecho build
 
 # Test suites; grows one entry per milestone that lands a suite.
-suites="test_codec test_bytes test_jsonx test_modelx"
+suites="test_codec test_bytes test_jsonx test_modelx test_paramsx"
 for t in $suites; do
   out="$("$here/_build/default/test/$t.exe")"
   echo "$t: $out"
@@ -34,7 +34,7 @@ fi
 # (quotex + policy, M38+): the omlz subset has no functors, so the
 # Map-based codec layer is zxlint-clean but not omlz-checkable.
 # Paths relative to lib/, core module first (zxlint requirement).
-core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml modelx.ml"
+core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml"
 if [ -n "$core" ]; then
   files=""
   for f in $core; do files="$files $here/lib/$f"; done

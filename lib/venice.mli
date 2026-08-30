@@ -12,6 +12,7 @@ module Error : sig
     | B64_invalid of string
     | Json_invalid of string
     | Model_invalid of string
+    | Param_invalid of string
 
   val to_string : t -> string
 end
@@ -81,6 +82,103 @@ module Json : sig
      consumes any wire number. None for Jint min_int: that magnitude
      is not representable as a non-negative mantissa. *)
   val as_dec : t -> dec option
+end
+
+module Constraints : sig
+  (* The typed view of a text model's constraints object: the model's
+     asserted default per sampling parameter, each window-checked at
+     parse time. Obtained from Model.constraints; the sampling
+     newtypes below read their defaults out of it. *)
+  type t
+end
+
+(* Constraint-bounded sampling newtypes. Each module's make is the
+   only mint and checks the chat request schema's documented window
+   (FACTS.md), so an out-of-window value cannot reach a request:
+   temperature 0..2, top_p 0..1, frequency_penalty and
+   presence_penalty -2..2, repetition_penalty >= 0, top_k >= 0.
+   Values are exact decimals; no float crosses the boundary. default
+   reads the model's asserted default from its constraints, already
+   checked against the same window. *)
+module Temp : sig
+  type t
+
+  val make : Json.dec -> (t, Error.t) result
+  val default : Constraints.t -> t option
+  val to_dec : t -> Json.dec
+end
+
+module Top_p : sig
+  type t
+
+  val make : Json.dec -> (t, Error.t) result
+  val default : Constraints.t -> t option
+  val to_dec : t -> Json.dec
+end
+
+module Frequency_penalty : sig
+  type t
+
+  val make : Json.dec -> (t, Error.t) result
+  val default : Constraints.t -> t option
+  val to_dec : t -> Json.dec
+end
+
+module Presence_penalty : sig
+  type t
+
+  val make : Json.dec -> (t, Error.t) result
+  val default : Constraints.t -> t option
+  val to_dec : t -> Json.dec
+end
+
+module Repetition_penalty : sig
+  type t
+
+  val make : Json.dec -> (t, Error.t) result
+  val default : Constraints.t -> t option
+  val to_dec : t -> Json.dec
+end
+
+module Top_k : sig
+  type t
+
+  val make : int -> (t, Error.t) result
+  val to_int : t -> int
+end
+
+module Venice_params : sig
+  (* The venice_parameters request object, typed to the wire schema.
+     An unset field is not sent, so the server default applies; that
+     is not the same act as sending the default value, and to_json
+     preserves the difference by emitting present fields only.
+     enable_e2ee is deliberately absent from this API: it is a
+     downgrade lever (false runs an E2EE-capable model TEE-only even
+     when E2EE headers are present), so the session layer owns it and
+     nothing here can switch E2EE off. *)
+  type web_search =
+    | Auto
+    | Off
+    | On
+
+  type t
+
+  val make :
+    ?character_slug:string ->
+    ?strip_thinking_response:bool ->
+    ?disable_thinking:bool ->
+    ?enable_web_search:web_search ->
+    ?enable_web_scraping:bool ->
+    ?enable_web_citations:bool ->
+    ?include_search_results_in_stream:bool ->
+    ?return_search_results_as_documents:bool ->
+    ?include_venice_system_prompt:bool ->
+    ?enable_x_search:bool ->
+    unit ->
+    t
+
+  val is_empty : t -> bool
+  val to_json : t -> Json.t
 end
 
 module Model : sig
@@ -166,6 +264,12 @@ module Model : sig
   val context_tokens : 'c t -> int option
   val max_completion_tokens : 'c t -> int option
   val deprecation : 'c t -> deprecation
+
+  (* The typed constraints view parses on access, so a malformed inner
+     parameter rejects at the call that needs it (with the model id on
+     the error path) instead of failing the whole listing. *)
+  val constraints : 'c t -> (Constraints.t, Error.t) result
+
   val quantization : 'c t -> quantization option
   val effort_options : 'c t -> string list
 end

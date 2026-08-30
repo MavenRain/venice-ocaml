@@ -1,0 +1,328 @@
+(* M6 sampling domain. The chat request schema bounds every sampling
+   parameter to a documented window (FACTS.md: temperature 0..2,
+   top_p 0..1, frequency_penalty and presence_penalty -2..2,
+   repetition_penalty >= 0, top_k >= 0), and the newtype modules below
+   are the only mint, so an out-of-window value cannot reach a request
+   and discover its 400 in prod. Values stay exact Jsonx decimals; no
+   float crosses the boundary. A model's constraints object carries
+   only a default per parameter, so make checks the request window and
+   default reads the model's asserted default, which the constraints
+   parse window-checks up front: every value behind a newtype holds
+   the same invariant no matter which door it came through. *)
+
+let ( let* ) = Result.bind
+
+let invalid (msg : string) : ('a, Errx.t) result =
+  Error (Errx.Param_invalid msg)
+
+let require (what : string) (o : 'a option) : ('a, Errx.t) result =
+  Option.fold ~none:(invalid what) ~some:Result.ok o
+
+(* A canonical decimal is the shape jsonx's number parser produces:
+   nonnegative mantissa of at most 18 digits, scale 0..18. Jsonx.dec
+   is concrete in the public signature, so a caller can build one by
+   hand; every mint validates first, which keeps the digit-string
+   comparison below total (no leading sign, bounded padding). *)
+let canonical (d : Jsonx.dec) : bool =
+  d.Jsonx.mantissa >= 0 && d.Jsonx.scale >= 0 && d.Jsonx.scale <= 18
+  && String.length (string_of_int d.Jsonx.mantissa) <= 18
+
+let zeros (n : int) : string = if n <= 0 then "" else String.make n '0'
+
+(* Magnitude order of two canonical nonzero decimals: right-pad both
+   digit strings to a common scale; with no leading zeros the longer
+   string is the larger number, and equal lengths compare byte-wise. *)
+let compare_mag (a : Jsonx.dec) (b : Jsonx.dec) : int =
+  let s = max a.Jsonx.scale b.Jsonx.scale in
+  let da = string_of_int a.Jsonx.mantissa ^ zeros (s - a.Jsonx.scale) in
+  let db = string_of_int b.Jsonx.mantissa ^ zeros (s - b.Jsonx.scale) in
+  match () with
+  | () when String.length da < String.length db -> -1
+  | () when String.length da > String.length db -> 1
+  | () -> String.compare da db
+
+(* Sign with zero normalized: mantissa 0 is zero whatever the printed
+   scale or negative flag, so "-0.0" sits with 0. *)
+let sign_of (d : Jsonx.dec) : int =
+  match () with
+  | () when d.Jsonx.mantissa = 0 -> 0
+  | () when d.Jsonx.negative -> -1
+  | () -> 1
+
+(* Total order on canonical decimals. *)
+let compare_dec (a : Jsonx.dec) (b : Jsonx.dec) : int =
+  let sa = sign_of a in
+  let sb = sign_of b in
+  match () with
+  | () when sa < sb -> -1
+  | () when sa > sb -> 1
+  | () when sa = 0 -> 0
+  | () when sa > 0 -> compare_mag a b
+  | () -> compare_mag b a
+
+let d_zero : Jsonx.dec = { Jsonx.negative = false; mantissa = 0; scale = 0 }
+let d_one : Jsonx.dec = { Jsonx.negative = false; mantissa = 1; scale = 0 }
+let d_two : Jsonx.dec = { Jsonx.negative = false; mantissa = 2; scale = 0 }
+
+let d_neg_two : Jsonx.dec =
+  { Jsonx.negative = true; mantissa = 2; scale = 0 }
+
+(* A request window; hi None means unbounded above. Both edges are
+   inclusive, as the schema's minimum/maximum are. *)
+type window =
+  { lo : Jsonx.dec;
+    hi : Jsonx.dec option }
+
+let in_window (w : window) (d : Jsonx.dec) : bool =
+  compare_dec w.lo d <= 0
+  && Option.fold ~none:true ~some:(fun h -> compare_dec d h <= 0) w.hi
+
+let checked (what : string) (w : window) (d : Jsonx.dec) :
+    (Jsonx.dec, Errx.t) result =
+  match () with
+  | () when not (canonical d) -> invalid (what ^ ": not a canonical decimal")
+  | () when not (in_window w d) ->
+    invalid (what ^ ": outside the documented window")
+  | () -> Ok d
+
+let temp_window : window = { lo = d_zero; hi = Some d_two }
+let top_p_window : window = { lo = d_zero; hi = Some d_one }
+let penalty_window : window = { lo = d_neg_two; hi = Some d_two }
+let rep_window : window = { lo = d_zero; hi = None }
+
+module Constraints = struct
+  (* The typed view of a text model's constraints object: the model's
+     asserted default per sampling parameter, each window-checked at
+     parse time. Absent and null parameters read None, and image or
+     video models carry different constraint keys this view does not
+     touch, so the view is total across kinds. A present parameter
+     must be an object whose default is a number inside the request
+     window; anything else names its path and rejects. Parsing runs on
+     access (Modelx.constraints), so a malformed constraints object
+     rejects at the call that needs it, not the whole listing. *)
+  type t =
+    { temperature : Jsonx.dec option;
+      top_p : Jsonx.dec option;
+      frequency_penalty : Jsonx.dec option;
+      presence_penalty : Jsonx.dec option;
+      repetition_penalty : Jsonx.dec option }
+
+  (* Assoc lookup that normalizes an explicit JSON null to absence,
+     matching modelx's member_nn read of every optional field. *)
+  let assoc_nn (name : string) (fields : (string * Jsonx.t) list) :
+      Jsonx.t option =
+    Option.bind (List.assoc_opt name fields) (fun v ->
+        match (v : Jsonx.t) with
+        | Jsonx.Jnull -> None
+        | Jsonx.Jbool _ | Jsonx.Jint _ | Jsonx.Jdec _ | Jsonx.Jstring _
+        | Jsonx.Jlist _ | Jsonx.Jobj _ -> Some v)
+
+  let default_of (ctx : string) (name : string) (w : window)
+      (fields : (string * Jsonx.t) list) :
+      (Jsonx.dec option, Errx.t) result =
+    Option.fold ~none:(Ok None)
+      ~some:(fun v ->
+        let where = ctx ^ ".constraints." ^ name in
+        let* obj = require (where ^ ": not an object") (Jsonx.as_obj v) in
+        let* dv =
+          require
+            (where ^ ".default: missing or not a representable number")
+            (Option.bind (assoc_nn "default" obj) Jsonx.as_dec)
+        in
+        Result.map Option.some (checked (where ^ ".default") w dv))
+      (assoc_nn name fields)
+
+  let of_raw (ctx : string) (fields : (string * Jsonx.t) list) :
+      (t, Errx.t) result =
+    let* temperature = default_of ctx "temperature" temp_window fields in
+    let* top_p = default_of ctx "top_p" top_p_window fields in
+    let* frequency_penalty =
+      default_of ctx "frequency_penalty" penalty_window fields
+    in
+    let* presence_penalty =
+      default_of ctx "presence_penalty" penalty_window fields
+    in
+    let* repetition_penalty =
+      default_of ctx "repetition_penalty" rep_window fields
+    in
+    Ok
+      { temperature;
+        top_p;
+        frequency_penalty;
+        presence_penalty;
+        repetition_penalty }
+end
+
+(* The five decimal newtypes share one shape: the type is the
+   window-checked decimal, make is the only public mint, and default
+   reads the model's constraints view, whose values already passed the
+   same check. *)
+module Temp = struct
+  type t = Jsonx.dec
+
+  let make (d : Jsonx.dec) : (t, Errx.t) result =
+    checked "temperature" temp_window d
+
+  let default (c : Constraints.t) : t option = c.Constraints.temperature
+  let to_dec (t : t) : Jsonx.dec = t
+end
+
+module Top_p = struct
+  type t = Jsonx.dec
+
+  let make (d : Jsonx.dec) : (t, Errx.t) result =
+    checked "top_p" top_p_window d
+
+  let default (c : Constraints.t) : t option = c.Constraints.top_p
+  let to_dec (t : t) : Jsonx.dec = t
+end
+
+module Frequency_penalty = struct
+  type t = Jsonx.dec
+
+  let make (d : Jsonx.dec) : (t, Errx.t) result =
+    checked "frequency_penalty" penalty_window d
+
+  let default (c : Constraints.t) : t option =
+    c.Constraints.frequency_penalty
+
+  let to_dec (t : t) : Jsonx.dec = t
+end
+
+module Presence_penalty = struct
+  type t = Jsonx.dec
+
+  let make (d : Jsonx.dec) : (t, Errx.t) result =
+    checked "presence_penalty" penalty_window d
+
+  let default (c : Constraints.t) : t option =
+    c.Constraints.presence_penalty
+
+  let to_dec (t : t) : Jsonx.dec = t
+end
+
+module Repetition_penalty = struct
+  type t = Jsonx.dec
+
+  let make (d : Jsonx.dec) : (t, Errx.t) result =
+    checked "repetition_penalty" rep_window d
+
+  let default (c : Constraints.t) : t option =
+    c.Constraints.repetition_penalty
+
+  let to_dec (t : t) : Jsonx.dec = t
+end
+
+module Top_k = struct
+  type t = int
+
+  let make (n : int) : (t, Errx.t) result =
+    if n >= 0 then Ok n else invalid "top_k: negative"
+
+  let to_int (t : t) : int = t
+end
+
+module Venice_params = struct
+  (* The venice_parameters request object, typed to the wire schema.
+     None means the field is not sent, so the server default applies;
+     that is not the same act as sending the default value, and the
+     emitter preserves the difference. enable_e2ee is deliberately
+     absent: it is a downgrade lever (false runs an E2EE-capable model
+     TEE-only even when E2EE headers are present), so the session
+     layer owns it (M28+) and no API here can switch E2EE off. *)
+
+  type web_search =
+    | Auto
+    | Off
+    | On
+
+  let web_search_wire (w : web_search) : string =
+    match w with
+    | Auto -> "auto"
+    | Off -> "off"
+    | On -> "on"
+
+  type t =
+    { character_slug : string option;
+      strip_thinking_response : bool option;
+      disable_thinking : bool option;
+      enable_web_search : web_search option;
+      enable_web_scraping : bool option;
+      enable_web_citations : bool option;
+      include_search_results_in_stream : bool option;
+      return_search_results_as_documents : bool option;
+      include_venice_system_prompt : bool option;
+      enable_x_search : bool option }
+
+  let make ?(character_slug : string option)
+      ?(strip_thinking_response : bool option)
+      ?(disable_thinking : bool option)
+      ?(enable_web_search : web_search option)
+      ?(enable_web_scraping : bool option)
+      ?(enable_web_citations : bool option)
+      ?(include_search_results_in_stream : bool option)
+      ?(return_search_results_as_documents : bool option)
+      ?(include_venice_system_prompt : bool option)
+      ?(enable_x_search : bool option) (() : unit) : t =
+    { character_slug;
+      strip_thinking_response;
+      disable_thinking;
+      enable_web_search;
+      enable_web_scraping;
+      enable_web_citations;
+      include_search_results_in_stream;
+      return_search_results_as_documents;
+      include_venice_system_prompt;
+      enable_x_search }
+
+  let is_empty (p : t) : bool =
+    Option.is_none p.character_slug
+    && Option.is_none p.strip_thinking_response
+    && Option.is_none p.disable_thinking
+    && Option.is_none p.enable_web_search
+    && Option.is_none p.enable_web_scraping
+    && Option.is_none p.enable_web_citations
+    && Option.is_none p.include_search_results_in_stream
+    && Option.is_none p.return_search_results_as_documents
+    && Option.is_none p.include_venice_system_prompt
+    && Option.is_none p.enable_x_search
+
+  let field (name : string) (f : 'a -> Jsonx.t) (v : 'a option) :
+      (string * Jsonx.t) list =
+    Option.fold ~none:[] ~some:(fun x -> [ (name, f x) ]) v
+
+  (* Only present fields emit, in the wire documentation's order. *)
+  let to_json (p : t) : Jsonx.t =
+    Jsonx.Jobj
+      (List.concat
+         [ field "character_slug"
+             (fun (s : string) -> Jsonx.Jstring s)
+             p.character_slug;
+           field "strip_thinking_response"
+             (fun (b : bool) -> Jsonx.Jbool b)
+             p.strip_thinking_response;
+           field "disable_thinking"
+             (fun (b : bool) -> Jsonx.Jbool b)
+             p.disable_thinking;
+           field "enable_web_search"
+             (fun (w : web_search) -> Jsonx.Jstring (web_search_wire w))
+             p.enable_web_search;
+           field "enable_web_scraping"
+             (fun (b : bool) -> Jsonx.Jbool b)
+             p.enable_web_scraping;
+           field "enable_web_citations"
+             (fun (b : bool) -> Jsonx.Jbool b)
+             p.enable_web_citations;
+           field "include_search_results_in_stream"
+             (fun (b : bool) -> Jsonx.Jbool b)
+             p.include_search_results_in_stream;
+           field "return_search_results_as_documents"
+             (fun (b : bool) -> Jsonx.Jbool b)
+             p.return_search_results_as_documents;
+           field "include_venice_system_prompt"
+             (fun (b : bool) -> Jsonx.Jbool b)
+             p.include_venice_system_prompt;
+           field "enable_x_search"
+             (fun (b : bool) -> Jsonx.Jbool b)
+             p.enable_x_search ])
+end

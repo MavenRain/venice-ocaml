@@ -73,7 +73,7 @@ module Model : sig
   val tools     : 'c t -> (('c * tools) t) option
   val reasoning : 'c t -> (('c * reasoning) t) option
   val e2ee      : 'c t -> (('c * e2ee) t) option
-  val constraints : 'c t -> Constraints.t
+  val constraints : 'c t -> (Constraints.t, Error.t) result  (* parses on access *)
   val deprecation : 'c t -> Deprecation.t
 end
 

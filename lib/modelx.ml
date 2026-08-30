@@ -450,6 +450,12 @@ let context_tokens (m : 'c t) : int option = m.context_tokens
 let max_completion_tokens (m : 'c t) : int option = m.max_completion_tokens
 let deprecation (m : 'c t) : deprecation = m.deprecation
 
+(* The typed constraints view parses on access, so a malformed inner
+   parameter rejects at the call that needs it (with the model id on
+   the path) instead of killing the whole listing at parse time. *)
+let constraints (m : 'c t) : (Paramsx.Constraints.t, Errx.t) result =
+  Paramsx.Constraints.of_raw m.id m.constraints
+
 let quantization (m : 'c t) : quantization option =
   Option.bind m.caps (fun (c : caps) -> c.quantization)
 
