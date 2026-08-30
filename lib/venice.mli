@@ -11,6 +11,7 @@ module Error : sig
     | Hex_invalid of string
     | B64_invalid of string
     | Json_invalid of string
+    | Model_invalid of string
 
   val to_string : t -> string
 end
@@ -80,4 +81,91 @@ module Json : sig
      consumes any wire number. None for Jint min_int: that magnitude
      is not representable as a non-negative mantissa. *)
   val as_dec : t -> dec option
+end
+
+module Model : sig
+  (* A /models entry as a capability row. 'caps is phantom: it records
+     which capability witnesses have been extracted from the server's
+     listing, and the extractors below are the only mint, so an API
+     that demands e.g. a ('c * vision) t cannot be called without the
+     listing having asserted vision support. Closed wire enums (kind,
+     privacy, quantization) reject foreign values loudly; slugs are
+     open-world, so an unfamiliar id stays usable as Unknown. Field
+     names follow FACTS.md and are hypotheses until the M2 probe. *)
+
+  (* Phantom capability markers, uninhabited. *)
+  type vision
+  type tools
+  type reasoning
+  type audio
+  type tee
+  type e2ee
+
+  type 'caps t
+  type packed = Pack : 'c t -> packed
+
+  type slug =
+    | E2ee_qwen3_5_122b_a10b
+    | E2ee_glm_5
+    | Unknown of string
+
+  type kind =
+    | Text
+    | Code
+    | Image
+    | Embedding
+    | Tts
+    | Asr
+    | Music
+    | Upscale
+    | Inpaint
+    | Video
+
+  type privacy =
+    | Private
+    | Anonymized
+
+  type quantization =
+    | Fp4
+    | Fp8
+    | Fp16
+    | Bf16
+    | Int8
+    | Int4
+    | Not_available
+
+  (* Absent or null deprecation reads as Active. A present object keeps
+     every date member verbatim as (key, printed value) and pulls out
+     the replacement slug by key prefix. *)
+  type deprecation =
+    | Active
+    | Deprecated of
+        { dates : (string * string) list;
+          replacement : string option }
+
+  val of_json : Json.t -> (packed, Error.t) result
+  val of_listing : Json.t -> (packed list, Error.t) result
+
+  (* Witness extraction: Some retypes the model with the marker; a
+     model whose listing did not assert the capability reads None. *)
+  val vision : 'c t -> ('c * vision) t option
+  val tools : 'c t -> ('c * tools) t option
+  val reasoning : 'c t -> ('c * reasoning) t option
+  val audio : 'c t -> ('c * audio) t option
+  val tee : 'c t -> ('c * tee) t option
+  val e2ee : 'c t -> ('c * e2ee) t option
+
+  val id : 'c t -> string
+  val slug : 'c t -> slug
+  val kind : 'c t -> kind
+  val created : 'c t -> int option
+  val traits : 'c t -> string list
+  val offline : 'c t -> bool
+  val beta : 'c t -> bool
+  val privacy : 'c t -> privacy option
+  val context_tokens : 'c t -> int option
+  val max_completion_tokens : 'c t -> int option
+  val deprecation : 'c t -> deprecation
+  val quantization : 'c t -> quantization option
+  val effort_options : 'c t -> string list
 end

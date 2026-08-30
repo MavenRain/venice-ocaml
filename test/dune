@@ -12,3 +12,8 @@
  (name test_jsonx)
  (modules test_jsonx)
  (libraries venice))
+
+(test
+ (name test_modelx)
+ (modules test_modelx)
+ (libraries venice))
