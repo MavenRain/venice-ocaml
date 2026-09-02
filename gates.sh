@@ -10,7 +10,7 @@ cd "$here"
 dunecho build
 
 # Test suites; grows one entry per milestone that lands a suite.
-suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx"
+suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx"
 for t in $suites; do
   out="$("$here/_build/default/test/$t.exe")"
   echo "$t: $out"
@@ -61,6 +61,7 @@ expect_fail cf_b_wrong_witness.ml "Venice.Model.audio" "not compatible"
 expect_fail cf_c_two_models.ml "bound by the constructor" "Pack"
 expect_fail cf_d_stacked.ml "Venice.Model.vision" "not compatible"
 expect_fail cf_e_repack.ml "Venice.Msg.nonempty" "not compatible"
+expect_fail cf_f_effort_wrong_model.ml "Venice.Model.reasoning_effort" "not compatible"
 
 # Compile-fail harnesses (M12, M34).
 if [ -x "$here/harness/compile_fail.sh" ]; then
@@ -77,7 +78,7 @@ fi
 # (quotex + policy, M38+): the omlz subset has no functors, so the
 # Map-based codec layer is zxlint-clean but not omlz-checkable.
 # Paths relative to lib/, core module first (zxlint requirement).
-core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml"
+core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml"
 if [ -n "$core" ]; then
   files=""
   for f in $core; do files="$files $here/lib/$f"; done

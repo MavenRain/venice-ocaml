@@ -26,6 +26,14 @@ type e2ee = |
    video-GENERATION model kind. *)
 type video = |
 
+(* reasoning_effort request-member capability marker (wire
+   supportsReasoningEffort). Distinct from reasoning: the effort menu
+   is its own server assertion, so it carries its own witness (A1). *)
+type reasoning_effort = |
+
+(* logprobs request-member capability marker (wire supportsLogProbs). *)
+type log_probs = |
+
 type slug =
   | E2ee_qwen3_5_122b_a10b
   | E2ee_glm_5
@@ -506,6 +514,16 @@ let e2ee (m : 'c t) : ('c * e2ee) t option =
    (wire supportsVideoInput), never the Video model kind. *)
 let video (m : 'c t) : ('c * video) t option =
   if has (fun c -> c.video_input) m then Some m else None
+
+(* reasoning_effort witness; the gate is caps.reasoning_effort (wire
+   supportsReasoningEffort), never caps.reasoning: the effort menu is
+   its own server assertion. *)
+let reasoning_effort (m : 'c t) : ('c * reasoning_effort) t option =
+  if has (fun c -> c.reasoning_effort) m then Some m else None
+
+(* logprobs witness (wire supportsLogProbs). *)
+let log_probs (m : 'c t) : ('c * log_probs) t option =
+  if has (fun c -> c.log_probs) m then Some m else None
 
 (* The grouped multimodal view: all three media witnesses extracted in
    parallel at the base row 'c, so multimodal content never needs the

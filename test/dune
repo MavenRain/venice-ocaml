@@ -32,3 +32,8 @@
  (name test_headx)
  (modules test_headx)
  (libraries venice))
+
+(test
+ (name test_chatx)
+ (modules test_chatx)
+ (libraries venice))

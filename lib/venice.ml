@@ -29,3 +29,7 @@ module Usd = Headx.Usd
 module Diem = Headx.Diem
 module Tier = Headx.Tier
 module Head = Headx
+module Stop = Chatx.Stop
+module Effort = Chatx.Effort
+module Cache_retention = Chatx.Cache_retention
+module Chat = Chatx

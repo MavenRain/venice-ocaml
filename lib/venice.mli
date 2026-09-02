@@ -15,6 +15,7 @@ module Error : sig
     | Param_invalid of string
     | Msg_invalid of string
     | Head_invalid of string
+    | Chat_invalid of string
 
   val to_string : t -> string
 end
@@ -243,6 +244,15 @@ module Model : sig
   (* video-INPUT capability marker. Distinct from the kind constructor
      Video below, which names a video-GENERATION model kind. *)
 
+  type reasoning_effort
+  (* reasoning_effort request-member capability marker (wire
+     supportsReasoningEffort). Distinct from reasoning: the effort
+     menu is its own server assertion. *)
+
+  type log_probs
+  (* logprobs request-member capability marker (wire
+     supportsLogProbs). *)
+
   type 'caps t
   type packed = Pack : 'c t -> packed
 
@@ -301,6 +311,12 @@ module Model : sig
 
   val video : 'c t -> ('c * video) t option
   (* Some iff the listing asserts supportsVideoInput *)
+
+  val reasoning_effort : 'c t -> ('c * reasoning_effort) t option
+  (* Some iff the listing asserts supportsReasoningEffort *)
+
+  val log_probs : 'c t -> ('c * log_probs) t option
+  (* Some iff the listing asserts supportsLogProbs *)
 
   type 'c media =
     { vision : ('c * vision) t option;
@@ -631,4 +647,116 @@ module Head : sig
     head:(t, Error.t) result ->
     raw:string ->
     (failure option, Error.t) result
+end
+
+(* M9 chat request domain. Stop, Effort, and Cache_retention are
+   hoisted satellites of Chat, like Audio_format/Cache ahead of Msg
+   and Reset_at..Tier ahead of Head. *)
+
+module Stop : sig
+  (* The stop member: one sequence (of_string) or 1..4 sequences
+     (of_list; schema minItems 1, maxItems 4). The empty string
+     rejects in both forms as SDK strictness. The wire's null branch
+     is expressed by NOT passing ?stop to Chat.make; the SDK never
+     emits null. *)
+  type t
+
+  val of_string : string -> (t, Error.t) result
+  val of_list : string list -> (t, Error.t) result
+end
+
+module Effort : sig
+  (* reasoning_effort wire enum, closed; None_ avoids the OCaml
+     keyword. Emitted only as the top-level reasoning_effort member
+     (the precedence winner over reasoning.effort); the nested
+     reasoning object is never emitted. *)
+  type t =
+    | None_
+    | Minimal
+    | Low
+    | Medium
+    | High
+    | Xhigh
+    | Max
+
+  val to_string : t -> string
+  (* lowercase wire names *)
+
+  val of_string : string -> (t, Error.t) result
+end
+
+module Cache_retention : sig
+  (* prompt_cache_retention wire enum, closed; H24 is the "24h" wire
+     value. *)
+  type t =
+    | Default
+    | Extended
+    | H24
+
+  val to_string : t -> string
+  val of_string : string -> (t, Error.t) result
+end
+
+module Chat : sig
+  (* The chat request: built by the one mint below, never assembled
+     by hand. The phantom 'c ties the model witness, the messages
+     (whose media parts were witnessed against that model), and every
+     capability-gated member to ONE model row, and the encoder reads
+     the request model from the same witness, so request model and
+     witness model cannot diverge. Only text-like models (kind Text
+     or Code) mint: every guard here reads text-model fields. The
+     sampling newtypes arrive ALREADY MINTED (one mint path per
+     newtype); an absent optional is not sent, so the server default
+     applies. stream and stream_options are not mint members:
+     streaming is chosen at the client call site (M13+). max_tokens
+     is deprecated wire surface and never emitted. The emission
+     member order is frozen and SDK-owned; absent optionals are never
+     emitted, and no member is ever emitted as null. *)
+  type 'c t
+
+  val make :
+    ?temperature:Temp.t ->
+    ?top_p:Top_p.t ->
+    ?frequency_penalty:Frequency_penalty.t ->
+    ?presence_penalty:Presence_penalty.t ->
+    ?repetition_penalty:Repetition_penalty.t ->
+    ?top_k:Top_k.t ->
+    ?venice:Venice_params.t ->
+    ?max_completion:int ->
+    ?stop:Stop.t ->
+    ?stop_token_ids:int list ->
+    ?seed:int ->
+    ?n:int ->
+    ?logprobs:(('c * Model.log_probs) Model.t * bool) ->
+    ?top_logprobs:int ->
+    ?effort:(('c * Model.reasoning_effort) Model.t * Effort.t) ->
+    ?prompt_cache_key:string ->
+    ?cache_retention:Cache_retention.t ->
+    'c Model.t ->
+    'c Msg.nonempty ->
+    unit ->
+    ('c t, Error.t) result
+  (* Mint checks: model kind Text or Code; max_completion >= 1 and at
+     most the model's published maxCompletionTokens (a model that
+     publishes none accepts any value); seed >= 1; n >= 1; logprobs
+     requires the Model.log_probs witness, and top_logprobs (>= 0)
+     rejects without logprobs; effort requires the
+     Model.reasoning_effort witness from the SAME model row and, when
+     the model publishes reasoningEffortOptions, membership in that
+     list; stop_token_ids nonempty with every id >= 0;
+     prompt_cache_key nonempty. venice_parameters is emitted only
+     when non-empty. *)
+
+  val budget : 'c t -> prompt_tokens:int -> (unit, Error.t) result
+  (* Advisory context budget, separate from the mint: the SDK has no
+     tokenizer, so the caller supplies the prompt token estimate. The
+     check is prompt_tokens + effective completion <=
+     availableContextTokens, where effective completion is the
+     requested max_completion when present, else the model's
+     published maxCompletionTokens, else 0. A model that publishes no
+     context window reads Ok (absence of a cap is not evidence of
+     overflow); prompt_tokens < 0 rejects. *)
+
+  val emit : 'c t -> string
+  (* the request body bytes; deterministic, byte-stable member order *)
 end

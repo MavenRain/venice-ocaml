@@ -181,7 +181,7 @@ plus a full-edge differential sweep (x402-caml conformance pattern).
 |---|---|
 | **A: foundation** | |
 | M1 | scaffold: dune-project, opam, licenses, gates.sh, ZXCAML.md, DESIGN.md, FACTS.md |
-| M2 | live probe I: models list + headers + one SSE stream recorded to fixtures/ (redacted); FACTS pins or corrections |
+| M2 | live probe I: models list + headers + one SSE stream recorded to fixtures/ (redacted), plus one request-body capture per M9 chat golden starting with fixtures/chat_minimal.json (activates the skipped test_chatx fixture check); FACTS pins or corrections |
 | M3 | errx + bytesx (total cursor readers: u8/u16le/u32le/u64le/take at offset) + hexx strict + b64x (strict std base64 AND base64url) + tests |
 | M4 | jsonx port + scaled-decimal extension + tests |
 | **B: domain model** | |

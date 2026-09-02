@@ -40,3 +40,18 @@ let both (p : Venice.Model.packed) (q : Venice.Model.packed) :
     (Venice.Json.t, Venice.Error.t) result option list =
   [ request p ~url:"https://a/1.png" ~data:"aGVsbG8=";
     request q ~url:"https://b/2.png" ~data:"aGVsbG8=" ]
+
+(* M9: a witnessed effort call on the SAME model row compiles; this is
+   the positive twin of cf_f_effort_wrong_model.ml. *)
+let chat (p : Venice.Model.packed) : (string, Venice.Error.t) result option
+    =
+  match p with
+  | Venice.Model.Pack m ->
+    Option.map
+      (fun w ->
+        Result.bind (Venice.Msg.user_text "hello") (fun u ->
+            Result.bind (Venice.Msg.nonempty [ u ]) (fun msgs ->
+                Result.map Venice.Chat.emit
+                  (Venice.Chat.make m msgs
+                     ~effort:(w, Venice.Effort.Low) ()))))
+      (Venice.Model.reasoning_effort m)
