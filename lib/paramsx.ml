@@ -10,33 +10,36 @@
    parse window-checks up front: every value behind a newtype holds
    the same invariant no matter which door it came through. *)
 
-let ( let* ) = Result.bind
-
 let invalid (msg : string) : ('a, Errx.t) result =
   Error (Errx.Param_invalid msg)
 
-let require (what : string) (o : 'a option) : ('a, Errx.t) result =
-  Option.fold ~none:(invalid what) ~some:Result.ok o
-
 (* A canonical decimal is the shape jsonx's number parser produces:
-   nonnegative mantissa of at most 18 digits, scale 0..18. Jsonx.dec
+   nonnegative mantissa of at most 18 digits, scale 0..18. The digit
+   cap is numeric: a nonnegative mantissa has at most 18 digits
+   exactly when it is below 10^18, which fits a 63-bit int. Jsonx.dec
    is concrete in the public signature, so a caller can build one by
    hand; every mint validates first, which keeps the digit-string
    comparison below total (no leading sign, bounded padding). *)
 let canonical (d : Jsonx.dec) : bool =
   d.Jsonx.mantissa >= 0 && d.Jsonx.scale >= 0 && d.Jsonx.scale <= 18
-  && String.length (string_of_int d.Jsonx.mantissa) <= 18
+  && d.Jsonx.mantissa < 1_000_000_000_000_000_000
 
 let zeros (n : int) : string = if n <= 0 then "" else String.make n '0'
 
-(* Magnitude order of two canonical nonzero decimals: right-pad both
-   digit strings to a common scale; with no leading zeros the longer
-   string is the larger number, and equal lengths compare byte-wise. *)
+(* Magnitude order of two canonical decimals, total over zero: a zero
+   mantissa is the least magnitude whatever its scale, so no caller
+   ordering can misread a right-padded "0". For nonzero inputs,
+   right-pad both digit strings to a common scale; with no leading
+   zeros the longer string is the larger number, and equal lengths
+   compare byte-wise. *)
 let compare_mag (a : Jsonx.dec) (b : Jsonx.dec) : int =
   let s = max a.Jsonx.scale b.Jsonx.scale in
   let da = string_of_int a.Jsonx.mantissa ^ zeros (s - a.Jsonx.scale) in
   let db = string_of_int b.Jsonx.mantissa ^ zeros (s - b.Jsonx.scale) in
   match () with
+  | () when a.Jsonx.mantissa = 0 && b.Jsonx.mantissa = 0 -> 0
+  | () when a.Jsonx.mantissa = 0 -> -1
+  | () when b.Jsonx.mantissa = 0 -> 1
   | () when String.length da < String.length db -> -1
   | () when String.length da > String.length db -> 1
   | () -> String.compare da db
@@ -96,10 +99,14 @@ module Constraints = struct
      parse time. Absent and null parameters read None, and image or
      video models carry different constraint keys this view does not
      touch, so the view is total across kinds. A present parameter
-     must be an object whose default is a number inside the request
-     window; anything else names its path and rejects. Parsing runs on
-     access (Modelx.constraints), so a malformed constraints object
-     rejects at the call that needs it, not the whole listing. *)
+     with malformed metadata also reads None: not an object, no
+     default member, a default that is not a representable number, or
+     a default outside the request window. The request window is
+     enforced at the mint (Temp.make and its siblings); the advertised
+     default is advisory server metadata, so a model with junk
+     metadata simply asserts no usable default. Only a constraints
+     value that is not itself an object rejects, and modelx checks
+     that at entry parse, before fields reach of_raw. *)
   type t =
     { temperature : Jsonx.dec option;
       top_p : Jsonx.dec option;
@@ -117,40 +124,25 @@ module Constraints = struct
         | Jsonx.Jbool _ | Jsonx.Jint _ | Jsonx.Jdec _ | Jsonx.Jstring _
         | Jsonx.Jlist _ | Jsonx.Jobj _ -> Some v)
 
-  let default_of (ctx : string) (name : string) (w : window)
-      (fields : (string * Jsonx.t) list) :
-      (Jsonx.dec option, Errx.t) result =
-    Option.fold ~none:(Ok None)
-      ~some:(fun v ->
-        let where = ctx ^ ".constraints." ^ name in
-        let* obj = require (where ^ ": not an object") (Jsonx.as_obj v) in
-        let* dv =
-          require
-            (where ^ ".default: missing or not a representable number")
-            (Option.bind (assoc_nn "default" obj) Jsonx.as_dec)
-        in
-        Result.map Option.some (checked (where ^ ".default") w dv))
-      (assoc_nn name fields)
+  let default_of (name : string) (w : window)
+      (fields : (string * Jsonx.t) list) : Jsonx.dec option =
+    Option.bind (assoc_nn name fields) (fun v ->
+        Option.bind (Jsonx.as_obj v) (fun obj ->
+            Option.bind (Option.bind (assoc_nn "default" obj) Jsonx.as_dec)
+              (fun dv ->
+                if canonical dv && in_window w dv then Some dv else None)))
 
-  let of_raw (ctx : string) (fields : (string * Jsonx.t) list) :
+  let of_raw ((_ : string)) (fields : (string * Jsonx.t) list) :
       (t, Errx.t) result =
-    let* temperature = default_of ctx "temperature" temp_window fields in
-    let* top_p = default_of ctx "top_p" top_p_window fields in
-    let* frequency_penalty =
-      default_of ctx "frequency_penalty" penalty_window fields
-    in
-    let* presence_penalty =
-      default_of ctx "presence_penalty" penalty_window fields
-    in
-    let* repetition_penalty =
-      default_of ctx "repetition_penalty" rep_window fields
-    in
     Ok
-      { temperature;
-        top_p;
-        frequency_penalty;
-        presence_penalty;
-        repetition_penalty }
+      { temperature = default_of "temperature" temp_window fields;
+        top_p = default_of "top_p" top_p_window fields;
+        frequency_penalty =
+          default_of "frequency_penalty" penalty_window fields;
+        presence_penalty =
+          default_of "presence_penalty" penalty_window fields;
+        repetition_penalty =
+          default_of "repetition_penalty" rep_window fields }
 end
 
 (* The five decimal newtypes share one shape: the type is the

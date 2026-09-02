@@ -13,13 +13,18 @@ let ( let* ) = Result.bind
 
 (* Phantom capability markers, uninhabited. audio and tee join the
    DESIGN sketch's four: M7 audio parts and the attestation call (M21+)
-   each need their own witness. *)
+   each need their own witness. video joins at M7 for video parts. *)
 type vision = |
 type tools = |
 type reasoning = |
 type audio = |
 type tee = |
 type e2ee = |
+
+(* video-INPUT capability marker (wire supportsVideoInput). Distinct
+   from the kind constructor Video below, which names a
+   video-GENERATION model kind. *)
+type video = |
 
 type slug =
   | E2ee_qwen3_5_122b_a10b
@@ -42,6 +47,8 @@ type kind =
   | Music
   | Upscale
   | Inpaint
+  (* video-GENERATION model kind; the video-INPUT capability marker is
+     the uninhabited type video above. *)
   | Video
 
 type privacy =
@@ -63,8 +70,9 @@ type deprecation =
       { dates : (string * string) list;
         replacement : string option }
 
-(* Capability booleans as asserted by the server; quantization and the
-   reasoning-effort menu ride in the same wire object. *)
+(* Capability booleans as asserted by the server; quantization, the
+   reasoning-effort menu, and the image/video count limits ride in the
+   same wire object. *)
 type caps =
   { optimized_for_code : bool;
     function_calling : bool;
@@ -72,6 +80,9 @@ type caps =
     reasoning_effort : bool;
     response_schema : bool;
     vision : bool;
+    multiple_images : bool;
+    max_images : int option;
+    max_videos : int option;
     video_input : bool;
     audio_input : bool;
     web_search : bool;
@@ -276,6 +287,9 @@ let caps_of_json (ctx : string) (j : Jsonx.t) : (caps, Errx.t) result =
   let* reasoning_effort = bool_member c "supportsReasoningEffort" j in
   let* response_schema = bool_member c "supportsResponseSchema" j in
   let* vision = bool_member c "supportsVision" j in
+  let* multiple_images = bool_member c "supportsMultipleImages" j in
+  let* max_images = int_member c "maxImages" j in
+  let* max_videos = int_member c "maxVideos" j in
   let* video_input = bool_member c "supportsVideoInput" j in
   let* audio_input = bool_member c "supportsAudioInput" j in
   let* web_search = bool_member c "supportsWebSearch" j in
@@ -306,6 +320,9 @@ let caps_of_json (ctx : string) (j : Jsonx.t) : (caps, Errx.t) result =
       reasoning_effort;
       response_schema;
       vision;
+      multiple_images;
+      max_images;
+      max_videos;
       video_input;
       audio_input;
       web_search;
@@ -484,3 +501,33 @@ let tee (m : 'c t) : ('c * tee) t option =
 
 let e2ee (m : 'c t) : ('c * e2ee) t option =
   if has (fun c -> c.e2ee) m then Some m else None
+
+(* video-INPUT witness; the gate is caps.video_input
+   (wire supportsVideoInput), never the Video model kind. *)
+let video (m : 'c t) : ('c * video) t option =
+  if has (fun c -> c.video_input) m then Some m else None
+
+(* The grouped multimodal view: all three media witnesses extracted in
+   parallel at the base row 'c, so multimodal content never needs the
+   stacking idiom. *)
+type 'c media =
+  { vision : ('c * vision) t option;
+    audio : ('c * audio) t option;
+    video : ('c * video) t option }
+
+let media (m : 'c t) : 'c media =
+  { vision = vision m; audio = audio m; video = video m }
+
+(* Image/video count limits. supportsMultipleImages is REQUIRED on the
+   wire for text listings; a model with no capabilities object still
+   reads false. Single-image vision models silently drop all but the
+   last image-bearing message server-side, so a caller must be able to
+   read these fields to warn. *)
+let multiple_images (m : 'c t) : bool =
+  has (fun c -> c.multiple_images) m
+
+let max_images (m : 'c t) : int option =
+  Option.bind m.caps (fun (c : caps) -> c.max_images)
+
+let max_videos (m : 'c t) : int option =
+  Option.bind m.caps (fun (c : caps) -> c.max_videos)

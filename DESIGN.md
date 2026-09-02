@@ -65,7 +65,9 @@ derx attestx sessx clientx streamx), hidden behind it.
 
 ```ocaml
 module Model : sig
-  type vision  and tools  and reasoning  and e2ee  (* phantom markers, uninhabited *)
+  type vision  and tools  and reasoning  and audio  and tee  and e2ee  and video
+  (* phantom markers, uninhabited;  video is the video-INPUT capability,
+     not the Video model kind *)
   type 'caps t                        (* abstract; 'caps is a product of markers *)
   type packed = Pack : 'c t -> packed (* existential: what a /models parse yields *)
   val of_listing : Json.t -> (packed, Error.t) result
@@ -80,7 +82,7 @@ end
 module Chat : sig
   type request                             (* built, not assembled by hand *)
   val make :
-    model:'c Model.t -> messages:Msg.nonempty ->
+    model:'c Model.t -> messages:'c Msg.nonempty ->
     ?temperature:Temp.t -> ?venice:Venice_params.t -> ... ->
     (request, Error.t) result              (* Temp.t minted FROM the model's constraints *)
 end
@@ -106,11 +108,11 @@ module Tee : sig
 end
 
 module Session : sig
-  type t
+  type 'c t                                (* carries the model's base row *)
   val establish :
     entropy:Entropy.t -> attested:full Tee.Attested.t ->
-    model:('c * Model.e2ee) Model.t -> (t, Error.t) result
-  val send : t -> Msg.nonempty -> (Chat.request * t, Error.t) result
+    model:('c * Model.e2ee) Model.t -> ('c t, Error.t) result
+  val send : 'c t -> 'c Msg.nonempty -> (Chat.request * 'c t, Error.t) result
     (* contents leave only as Ciphertext.t hex; no plaintext API exists *)
 end
 
@@ -188,7 +190,8 @@ plus a full-edge differential sweep (x402-caml conformance pattern).
 | M7 | msgx: roles, nonempty messages, content parts; vision/audio parts require the capability witness + tests |
 | M8 | headx: rate-limit sextet + x-ratelimit-type + Diem/USD decimal balances + Tier + typed 429/4xx/5xx + tests |
 | M9 | chat request encoder + context budget check (prompt vs availableContextTokens, max_tokens vs maxCompletionTokens, boundary tests); byte-exact golden tests vs fixtures |
-| M10 | chat response parser: choices, usage, finish_reason variants + tests |
+| M10 | chat response parser: choices, usage, finish_reason variants + tests;  produces the reasoning_content / reasoning_details / thought_signature values whose request-side passthrough joins `assistant` as optional arguments |
+| M10a | tools / function-calling: typed tool_calls on `assistant` and typed tool-call parsing (the swagger leaves tool_calls items untyped;  M7's `assistant` takes new optional arguments without an API break) |
 | M11 | ssex: incremental SSE state machine, bounded, data:/[DONE], CRLF and LF + delta parse + tests |
 | M12 | compile-fail harness I: domain misuses + compiling control |
 | **C: transport + effects** | |

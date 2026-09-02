@@ -13,8 +13,20 @@ module J = Venice.Json
 module M = Venice.Model
 module V = Venice.Venice_params
 
+(* Library-internal modules, reached by their wrapped names: the
+   sealed Venice signature routes zeros away from compare_mag at
+   every public door, so totality over zero is only observable
+   here. *)
+module P = Venice__Paramsx
+module PJ = Venice__Jsonx
+
 let dec ?(neg = false) (m : int) (s : int) : J.dec =
   { J.negative = neg; mantissa = m; scale = s }
+
+(* The internal dec type; the sealed signature hides its equality
+   with J.dec. *)
+let pdec ?(neg = false) (m : int) (s : int) : PJ.dec =
+  { PJ.negative = neg; mantissa = m; scale = s }
 
 let is_ok (r : ('a, Venice.Error.t) result) : bool =
   Result.fold ~ok:(fun (_ : 'a) -> true)
@@ -96,6 +108,15 @@ let bad_out_of_window : string =
 let boundary_default : string =
   {|{"id":"m","type":"text","constraints":{"temperature":{"default":2},"top_p":{"default":1}}}|}
 
+(* One listing with three malformed parameters (non-object, object
+   without default, out-of-window default) next to two readable
+   ones. *)
+let degrade_mixed : string =
+  {|{"id":"m","type":"text","constraints":{"temperature":5,"frequency_penalty":{},"presence_penalty":{"default":9},"top_p":{"default":0.9},"repetition_penalty":{"default":1.05}}}|}
+
+let bad_constraints_value : string =
+  {|{"id":"m","type":"text","constraints":5}|}
+
 let checks : (string * bool) list =
   [ (* Temp window: 0 <= t <= 2, exact decimal compare. *)
     ("temp zero ok", is_ok (Venice.Temp.make (dec 0 0)));
@@ -130,6 +151,30 @@ let checks : (string * bool) list =
      is_ok
        (Venice.Temp.make
           { J.negative = false; mantissa = 999999999999999999; scale = 18 }));
+    (* Canonical mantissa cap boundary: 18 nines pass, 10^18 (19
+       digits) rejects. The repetition window has no upper bound, so
+       only canonicality can reject here. *)
+    ("canonical 18-nines mantissa ok",
+     is_ok (Venice.Repetition_penalty.make (dec 999999999999999999 0)));
+    ("canonical 10^18 mantissa rejects",
+     is_err (Venice.Repetition_penalty.make (dec 1000000000000000000 0)));
+    (* compare_mag is total over zero: a zero mantissa is the least
+       magnitude whatever its scale, with no caller pre-routing. *)
+    ("compare_mag zero zero", P.compare_mag (pdec 0 0) (pdec 0 3) = 0);
+    ("compare_mag zero vs padded nonzero",
+     P.compare_mag (pdec 0 0) (pdec 5 1) = -1);
+    ("compare_mag padded nonzero vs zero",
+     P.compare_mag (pdec 5 1) (pdec 0 0) = 1);
+    ("compare_mag zero vs small nonzero",
+     P.compare_mag (pdec 0 2) (pdec 1 18) = -1);
+    ("compare_mag nonzero pair unchanged",
+     P.compare_mag (pdec 15 1) (pdec 2 0) = -1);
+    (* compare_dec stays total on hand-built canonical zeros. *)
+    ("compare_dec zero pair", P.compare_dec (pdec 0 5) (pdec ~neg:true 0 0) = 0);
+    ("compare_dec zero below positive",
+     P.compare_dec (pdec 0 3) (pdec 5 1) = -1);
+    ("compare_dec negative below zero",
+     P.compare_dec (pdec ~neg:true 5 1) (pdec 0 4) = -1);
     (* Top_p window: 0 <= p <= 1. *)
     ("top_p zero ok", is_ok (Venice.Top_p.make (dec 0 0)));
     ("top_p one ok", is_ok (Venice.Top_p.make (dec 1 0)));
@@ -231,18 +276,38 @@ let checks : (string * bool) list =
      on_constraints boundary_default (fun c ->
          default_is (Venice.Temp.default c) Venice.Temp.to_dec (dec 2 0)
          && default_is (Venice.Top_p.default c) Venice.Top_p.to_dec (dec 1 0)));
-    (* Malformed constraints reject at access, with the path. *)
-    ("param not an object rejects", is_err (constraints_of bad_not_obj));
-    ("param not an object path",
-     err_prefix "param: m.constraints.temperature: not an object"
-       (constraints_of bad_not_obj));
-    ("missing default rejects", is_err (constraints_of bad_missing_default));
-    ("string default rejects", is_err (constraints_of bad_default_string));
-    ("null default rejects", is_err (constraints_of bad_default_null));
-    ("out-of-window default rejects", is_err (constraints_of bad_out_of_window));
-    ("out-of-window default path",
-     err_prefix "param: m.constraints.temperature.default: outside"
-       (constraints_of bad_out_of_window));
+    (* Malformed advertised metadata degrades that parameter to None;
+       the view stays Ok. *)
+    ("param not an object degrades to None",
+     on_constraints bad_not_obj (fun c ->
+         Option.is_none (Venice.Temp.default c)));
+    ("missing default degrades to None",
+     on_constraints bad_missing_default (fun c ->
+         Option.is_none (Venice.Temp.default c)));
+    ("string default degrades to None",
+     on_constraints bad_default_string (fun c ->
+         Option.is_none (Venice.Temp.default c)));
+    ("null default degrades to None",
+     on_constraints bad_default_null (fun c ->
+         Option.is_none (Venice.Temp.default c)));
+    ("out-of-window default degrades to None",
+     on_constraints bad_out_of_window (fun c ->
+         Option.is_none (Venice.Temp.default c)));
+    (* Malformed parameters degrade one by one; the readable ones in
+       the same listing keep their defaults. *)
+    ("mixed listing degrades only the malformed params",
+     on_constraints degrade_mixed (fun c ->
+         Option.is_none (Venice.Temp.default c)
+         && Option.is_none (Venice.Frequency_penalty.default c)
+         && Option.is_none (Venice.Presence_penalty.default c)
+         && default_is (Venice.Top_p.default c) Venice.Top_p.to_dec (dec 9 1)
+         && default_is
+              (Venice.Repetition_penalty.default c)
+              Venice.Repetition_penalty.to_dec (dec 105 2)));
+    (* A constraints value that is not an object still rejects the
+       entry at parse. *)
+    ("constraints not an object rejects",
+     is_err (Result.bind (J.parse bad_constraints_value) M.of_json));
     (* A malformed inner parameter does not fail entry parse itself. *)
     ("entry parse survives bad inner param",
      is_ok (Result.bind (J.parse bad_not_obj) M.of_json));

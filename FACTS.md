@@ -50,8 +50,9 @@ live probe confirms it (M2 pins the probe fixtures). Re-verify on SDK bumps.
   `supportsReasoning`, `supportsReasoningEffort`, `supportsResponseSchema`,
   `supportsVision`, `supportsVideoInput`, `supportsAudioInput`,
   `supportsWebSearch`, `supportsLogProbs`, `supportsTeeAttestation`,
-  `supportsE2EE`, `supportsXSearch`; `quantization` (fp4 fp8 fp16 bf16
-  int8 int4 not-available); `reasoningEffortOptions?`.
+  `supportsE2EE`, `supportsXSearch`, `supportsMultipleImages` (REQUIRED
+  bool); `maxImages?`, `maxVideos?` (optional numbers); `quantization`
+  (fp4 fp8 fp16 bf16 int8 int4 not-available); `reasoningEffortOptions?`.
 - `constraints` (text, swagger "Text Model Constraints"): per-parameter
   objects holding ONLY a required `default` number: `temperature` and
   `top_p` are required members, `frequency_penalty`,
@@ -65,6 +66,37 @@ live probe confirms it (M2 pins the probe fixtures). Re-verify on SDK bumps.
   `cache_write?`, `extended?` long-context tier.
 - Example TEE/E2EE slugs: `e2ee-qwen3-5-122b-a10b`, `e2ee-glm-5`.
   TEE/E2EE is text-models-only today.
+
+## Chat messages (`/chat/completions` request)
+- Roles: `system`, `developer`, `user`, `assistant`, `tool`.  Every role
+  requires `role` + `content` except `assistant` (content optional:
+  content or tool_calls) and `tool` (requires `tool_call_id` too).  Every
+  role offers an optional `name`.  `messages` has `minItems: 1`.
+- Content is either a bare string or a parts array.  Part shapes:
+  `text` {`text`}, `image_url` {`url`}, `input_audio` {`data`,
+  `format?`}, `video_url` {`url`}, `file` {`file_data`, `filename?`};
+  each part takes an optional `cache_control`.  Tool content is
+  string-only (no parts branch).
+- Text parts carry `minLength: 1`;  the rule is on PARTS only, not on
+  the bare-string content branch.  The SDK rejects "" on the bare-string
+  constructors as a deliberate SDK rule.
+- User `parts: []` is schema-legal (the parts array has no minItems);
+  the SDK's nonempty-parts rule is SDK-imposed strictness.
+- `input_audio.format`: wav | mp3 | aiff | aac | ogg | flac | m4a |
+  pcm16 | pcm24;  default wav when absent.
+- `cache_control`: `{"type": "ephemeral"}` with `type` REQUIRED.  `ttl`
+  is a beta feature behind a special header whose name the swagger does
+  not give;  OPEN FACT pending a probe.
+- Video count cap: the prose says "at most 3" videos while the
+  `maxVideos` example is 4;  contradiction is an M2-probe hypothesis;
+  fallback 3 when `maxVideos` is absent.
+- Video URLs have server-only conditions: no redirects, a permitted
+  Content-Type, and provider-dependent YouTube support;  the SDK checks
+  uri shape only.
+- Single-image vision models (`supportsMultipleImages` false) silently
+  DROP all but the last image-bearing message server-side;  the SDK
+  exposes `multiple_images` / `max_images` / `max_videos` so a caller
+  can warn instead of losing data.
 
 ## TEE attestation
 - `GET /tee/attestation?model=<id>&nonce=<64 hex>` . nonce MUST be exactly

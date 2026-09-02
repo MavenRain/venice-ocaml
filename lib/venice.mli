@@ -13,6 +13,7 @@ module Error : sig
     | Json_invalid of string
     | Model_invalid of string
     | Param_invalid of string
+    | Msg_invalid of string
 
   val to_string : t -> string
 end
@@ -181,6 +182,36 @@ module Venice_params : sig
   val to_json : t -> Json.t
 end
 
+module Audio_format : sig
+  (* input_audio.format wire enum; transparent by design. *)
+  type t =
+    | Wav
+    | Mp3
+    | Aiff
+    | Aac
+    | Ogg
+    | Flac
+    | M4a
+    | Pcm16
+    | Pcm24
+
+  val to_string : t -> string
+  (* lowercase wire names *)
+
+  val of_string : string -> (t, Error.t) result
+
+  val default : t
+  (* Wav; the wire default when the member is absent *)
+end
+
+module Cache : sig
+  type t
+
+  val ephemeral : t
+  (* cache_control {type:"ephemeral"}. ttl is deferred: beta feature
+     behind a header the swagger does not name (FACTS.md). *)
+end
+
 module Model : sig
   (* A /models entry as a capability row. 'caps is phantom: it records
      which capability witnesses have been extracted from the server's
@@ -198,6 +229,10 @@ module Model : sig
   type audio
   type tee
   type e2ee
+
+  type video
+  (* video-INPUT capability marker. Distinct from the kind constructor
+     Video below, which names a video-GENERATION model kind. *)
 
   type 'caps t
   type packed = Pack : 'c t -> packed
@@ -218,6 +253,8 @@ module Model : sig
     | Upscale
     | Inpaint
     | Video
+    (* video-GENERATION model kind; the video-INPUT capability marker
+       is the uninhabited type video above *)
 
   type privacy =
     | Private
@@ -253,6 +290,31 @@ module Model : sig
   val tee : 'c t -> ('c * tee) t option
   val e2ee : 'c t -> ('c * e2ee) t option
 
+  val video : 'c t -> ('c * video) t option
+  (* Some iff the listing asserts supportsVideoInput *)
+
+  type 'c media =
+    { vision : ('c * vision) t option;
+      audio : ('c * audio) t option;
+      video : ('c * video) t option }
+
+  val media : 'c t -> 'c media
+  (* The paved road: all three witnesses extracted in parallel at row
+     'c, so the stacking idiom is never needed for multimodal
+     content. *)
+
+  val multiple_images : 'c t -> bool
+  (* wire: supportsMultipleImages, required; a model with no
+     capabilities object reads false. Single-image vision models
+     silently drop all but the last image-bearing message server-side,
+     so a caller must be able to read these fields to warn. *)
+
+  val max_images : 'c t -> int option
+  (* wire: maxImages, optional *)
+
+  val max_videos : 'c t -> int option
+  (* wire: maxVideos, optional *)
+
   val id : 'c t -> string
   val slug : 'c t -> slug
   val kind : 'c t -> kind
@@ -272,4 +334,108 @@ module Model : sig
 
   val quantization : 'c t -> quantization option
   val effort_options : 'c t -> string list
+end
+
+module Msg : sig
+  (* Typed chat messages. Branded values (media parts, user messages,
+     'c nonempty) carry the phantom base row 'c of the witnessed
+     model, so a media part cannot reach a model whose listing never
+     asserted the capability. Unbranded payloads carry no type
+     variable: bind once at structure level, reuse across models; the
+     injections instantiate the row per use site inside each Pack
+     continuation. *)
+
+  type text_part
+  type file_part
+
+  type msg
+  (* one non-user message: system / developer / assistant / tool *)
+
+  val text : ?cache:Cache.t -> string -> (text_part, Error.t) result
+  (* minLength 1 (schema rule for text parts) *)
+
+  val file :
+    ?filename:string ->
+    ?cache:Cache.t ->
+    string ->
+    (file_part, Error.t) result
+  (* the string is file_data: uri-shape check (scheme present, or a
+     data: URL) *)
+
+  val system : ?name:string -> string -> (msg, Error.t) result
+
+  val system_parts :
+    ?name:string -> text_part list -> (msg, Error.t) result
+
+  val developer : ?name:string -> string -> (msg, Error.t) result
+
+  val developer_parts :
+    ?name:string -> text_part list -> (msg, Error.t) result
+  (* parts-taking forms are restricted to text parts so cache_control
+     is expressible where prompt caching pays (long system prompts);
+     the string forms are the sugar that emits the collapsed form *)
+
+  val assistant :
+    ?name:string -> ?content:string -> unit -> (msg, Error.t) result
+  (* rejects the all-absent case at mint; the tools milestone adds
+     ?tool_calls and the M10 passthrough values as pure
+     optional-argument additions, no API break *)
+
+  val tool :
+    ?name:string ->
+    tool_call_id:string ->
+    string ->
+    (msg, Error.t) result
+
+  (* Branded parts: the brand is the PRE-extraction base row of the
+     witnessed model. Extract every witness from the SAME base model;
+     Model.media is the paved road. *)
+  type 'c part
+
+  val of_text : text_part -> 'c part
+  (* injection; generalizes per use *)
+
+  val of_file : file_part -> 'c part
+  (* injection; generalizes per use *)
+
+  (* Optionals come before the anonymous witness so they stay
+     erasable: only a later anonymous argument erases an optional,
+     never a required labelled one. Partial application
+     Msg.image vm still reads as "minted against vm". *)
+
+  val image :
+    ?cache:Cache.t ->
+    ('c * Model.vision) Model.t ->
+    url:string ->
+    ('c part, Error.t) result
+
+  val audio :
+    ?format:Audio_format.t ->
+    ?cache:Cache.t ->
+    ('c * Model.audio) Model.t ->
+    data:string ->
+    ('c part, Error.t) result
+
+  val video :
+    ?cache:Cache.t ->
+    ('c * Model.video) Model.t ->
+    url:string ->
+    ('c part, Error.t) result
+
+  (* Branded messages. *)
+  type 'c t
+
+  val user : ?name:string -> 'c part list -> ('c t, Error.t) result
+  (* rejects []: SDK-imposed strictness, the schema has no minItems
+     here *)
+
+  val user_text : ?name:string -> string -> ('c t, Error.t) result
+
+  val lift : msg -> 'c t
+  (* injection; generalizes per use *)
+
+  type 'c nonempty
+
+  val nonempty : 'c t list -> ('c nonempty, Error.t) result
+  (* rejects [] ONLY; video counting is out of scope for M7 *)
 end

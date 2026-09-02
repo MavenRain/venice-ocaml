@@ -17,3 +17,6 @@ module Repetition_penalty = Paramsx.Repetition_penalty
 module Top_k = Paramsx.Top_k
 module Venice_params = Paramsx.Venice_params
 module Model = Modelx
+module Audio_format = Msgx.Audio_format
+module Cache = Msgx.Cache
+module Msg = Msgx

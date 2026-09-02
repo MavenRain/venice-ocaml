@@ -22,3 +22,8 @@
  (name test_paramsx)
  (modules test_paramsx)
  (libraries venice))
+
+(test
+ (name test_msgx)
+ (modules test_msgx)
+ (libraries venice))
