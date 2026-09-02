@@ -501,6 +501,19 @@ let checks : (string * bool) list =
      on_usd (usd_only "10.50") (dec_eq ~neg:false ~m:105 ~s:1));
     ("0.0 normalizes to plain zero",
      on_usd (usd_only "0.0") (dec_eq ~neg:false ~m:0 ~s:0));
+    ("-0 normalizes to unsigned zero",
+     on_usd (usd_only "-0") (dec_eq ~neg:false ~m:0 ~s:0));
+    ("-0.00 normalizes to unsigned zero",
+     on_diem (diem_only "-0.00") (dec_eq ~neg:false ~m:0 ~s:0));
+    ("count over 18 digits reports out of range",
+     err_contains "number out of range"
+       (H.of_pairs (req_with "1234567890123456789")));
+    ("19 integer digits report out of range",
+     err_contains "number out of range"
+       (H.of_pairs (usd_only "1234567890123456789")));
+    ("19 fraction digits report out of range",
+     err_contains "number out of range"
+       (H.of_pairs (usd_only "0.1234567890123456789")));
     ("negative usd accepts", on_usd (usd_only "-0.5")
        (dec_eq ~neg:true ~m:5 ~s:1));
     ("dot with no fraction rejects", is_err (H.of_pairs (usd_only "1.")));

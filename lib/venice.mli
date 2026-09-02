@@ -541,11 +541,14 @@ module Head : sig
   (* Typed response headers and typed HTTP failures, sans-io: input
      is the raw (name, value) pair list and the status/body strings a
      transport hands over. of_pairs is the only mint: names match
-     ASCII-case-insensitively, values strip edge whitespace, unknown
-     names drop, and a repeated recognized name, an embedded CR/LF,
-     or a comma inside a recognized singleton value rejects
-     (smuggling- and duplicate-shaped). Each rate-limit triple is
-     all-or-nothing (a half-triple means a mangled response);
+     ASCII-case-insensitively, values strip edge whitespace (SP,
+     HTAB, CR, LF: transport noise), unknown names drop, and a
+     repeated recognized name, an interior CR/LF, or a comma inside
+     a recognized singleton value rejects (smuggling- and
+     duplicate-shaped). Each rate-limit triple is all-or-nothing,
+     and a half-triple rejects the WHOLE parse (a mangled response
+     is not trimmed down to its clean fields; classify keeps the
+     raw pairs inside the failure, so nothing is silently lost);
      balances are two independent options (the x402 path documents
      USD-only account shapes). *)
   type t

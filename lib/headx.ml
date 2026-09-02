@@ -5,8 +5,10 @@
    these headers, so every header fact here is a hypothesis until the
    M2/M22 live probes. Names match ASCII-case-insensitively (RFC 9110
    field names); values normalize before any grammar; a repeated
-   recognized name, an embedded CR/LF, or a comma inside a recognized
-   singleton value rejects (smuggling- and duplicate-shaped). Each
+   recognized name, an interior CR/LF, or a comma inside a recognized
+   singleton value rejects (smuggling- and duplicate-shaped; edge
+   CR/LF strips with the other edge whitespace, as transport noise
+   rather than smuggling). Each
    rate-limit triple is all-or-nothing (a half-triple means a mangled
    response, and silently dropping it re-opens the silent-429 threat);
    balances are two independent options (the x402 path documents
@@ -40,8 +42,9 @@ let strip_value (v : string) : string =
   let cs = List.rev (drop_ws (List.rev cs)) in
   String.of_seq (List.to_seq cs)
 
-(* Normalization before any value grammar: strip, then reject an
-   embedded CR/LF (smuggling indicator) and a comma inside a
+(* Normalization before any value grammar: strip the edges (SP,
+   HTAB, CR, LF), then reject an interior CR/LF surviving the strip
+   (smuggling indicator) and a comma inside a
    recognized singleton value (duplicate-shaped; the digit grammar
    alone must not be the thing that catches "100, 100"). *)
 let clean_value (name : string) (v : string) : (string, Errx.t) result =
@@ -129,7 +132,12 @@ let dec_of ~(signed : bool) (name : string) (s : string) :
   | () when List.length significant > Jsonx.max_digits () ->
     invalid (name ^ ": more than 18 significant digits")
   | () ->
-    Ok { Jsonx.negative; mantissa = Jsonx.fold_digits significant; scale }
+    let mantissa = Jsonx.fold_digits significant in
+    (* canonical zero carries no sign: "-0" / "-0.0" normalize to the
+       unsigned zero (value-preserving, like the trailing-zero trim),
+       so a caller reading the record's negative field never sees a
+       zero balance as overdrawn *)
+    Ok { Jsonx.negative = negative && mantissa > 0; mantissa; scale }
 
 (* ---------- newtypes (A4, A10) ---------- *)
 
