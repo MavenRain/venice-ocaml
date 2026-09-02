@@ -34,6 +34,11 @@ type reasoning_effort = |
 (* logprobs request-member capability marker (wire supportsLogProbs). *)
 type log_probs = |
 
+(* response_format json_schema capability marker (wire
+   supportsResponseSchema). Gates the schema arm only: json_object
+   carries no witness (no capability row asserts it). *)
+type response_schema = |
+
 type slug =
   | E2ee_qwen3_5_122b_a10b
   | E2ee_glm_5
@@ -524,6 +529,10 @@ let reasoning_effort (m : 'c t) : ('c * reasoning_effort) t option =
 (* logprobs witness (wire supportsLogProbs). *)
 let log_probs (m : 'c t) : ('c * log_probs) t option =
   if has (fun c -> c.log_probs) m then Some m else None
+
+(* response_format json_schema witness (wire supportsResponseSchema). *)
+let response_schema (m : 'c t) : ('c * response_schema) t option =
+  if has (fun c -> c.response_schema) m then Some m else None
 
 (* The grouped multimodal view: all three media witnesses extracted in
    parallel at the base row 'c, so multimodal content never needs the

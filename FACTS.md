@@ -98,6 +98,57 @@ live probe confirms it (M2 pins the probe fixtures). Re-verify on SDK bumps.
   exposes `multiple_images` / `max_images` / `max_videos` so a caller
   can warn instead of losing data.
 
+## Tools (`/chat/completions` request + response)
+- Four request members in the chat schema: `tools` (swagger 1627-1674),
+  `tool_choice` (1610-1626), `parallel_tool_calls` (1549-1553, default
+  true), `response_format` (1554-1609).
+- `tools` items are an anyOf: a server-tool arm {`type`: web_search |
+  x_search} and a function arm {`function`: {`name` REQUIRED,
+  `description?`, `parameters?` (object), `strict?` default false},
+  `id?`, `type?`} (1631-1671).  The SDK emits the function arm only;
+  server tools wait for a capability gate and a pinned
+  venice_parameters interaction.
+- `tool_choice` is a two-arm anyOf: an OPEN string (no enum, 1626) or
+  {`type`, `function`: {`name`}} (1612-1625).  The /responses schema
+  pins ITS string arm to an enum (2314-2341); the chat schema does not.
+  The SDK emits auto | none | required | the function object.
+- `response_format` has three arms: json_schema, json_object
+  (deprecated), text (the default).  The json_schema arm takes the
+  schema object DIRECTLY under `json_schema` (1558-1567); there is no
+  OpenAI {name, schema} wrapper.
+- Assistant `tool_calls` items are UNTYPED and nullable in both the
+  request (1071-1075) and the response message union (6516-6652).  Two
+  candidate item shapes exist:
+  - the OpenAI nested shape {`id`, `type`: "function", `function`:
+    {`name`, `arguments`: string}} - the hypothesis the SDK
+    canonicalizes to;
+  - the /responses FLAT shape {`type`: "function_call", `id?`,
+    `call_id`, `name`, `arguments`: string} (2043-2067 request,
+    2497-2523 output) - a counter-example that proves Venice does not
+    always use the nested shape.  It corroborates only `arguments` as
+    a JSON-encoded string.
+  An M2-style live probe of a chat tool-call turn is the tiebreak; the
+  parser accepts the nested shape and keeps every item raw + verbatim,
+  so a flat capture cannot lose bytes.
+- `stop_reason` on a tool-call turn is an OPEN FACT: the response pins
+  a nullable {stop, length} enum (6653-6659) and nothing says which
+  value (or null) a `finish_reason: "tool_calls"` turn carries.  The
+  M2 probe list gains the finish_reason + stop_reason pair.
+- The REQUEST Tool Message (1081-1109) requires only `content`, `role`
+  and `tool_call_id`; it also declares `reasoning_content` and its own
+  `tool_calls`, both nullable and not required.  Those two are dead
+  members: a caller-sent tool RESULT has no producer semantics for
+  model reasoning or for nested calls, so `Msg.tool` omits them.
+- The response Tool Message arm (role "tool", to 6652) declares content
+  parts, reasoning members, and its own `tool_calls`: dead members the
+  SDK never reads; the choice parser rejects the role with a
+  path-carrying error.
+- `venice_parameters.return_search_results_as_documents` INJECTS a
+  synthetic tool call named "venice_web_search_documents" into the
+  response (1528-1532): a tool_calls consumer can receive a call that
+  names no tool it sent.
+- E2EE disables function calling (see the E2EE section).
+
 ## TEE attestation
 - `GET /tee/attestation?model=<id>&nonce=<64 hex>` . nonce MUST be exactly
   32 bytes (64 hex chars); providers reject shorter.

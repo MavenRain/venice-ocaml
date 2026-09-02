@@ -70,6 +70,8 @@ expect_fail cf_c_two_models.ml "bound by the constructor" "Pack"
 expect_fail cf_d_stacked.ml "Venice.Model.vision" "not compatible"
 expect_fail cf_e_repack.ml "Venice.Msg.nonempty" "not compatible"
 expect_fail cf_f_effort_wrong_model.ml "Venice.Model.reasoning_effort" "not compatible"
+expect_fail cf_g_tools_wrong_model.ml "Venice.Model.tools" "not compatible"
+expect_fail cf_h_response_format_wrong_model.ml "Venice.Model.response_schema" "not compatible"
 
 # Compile-fail harnesses (M12, M34).
 if [ -x "$here/harness/compile_fail.sh" ]; then

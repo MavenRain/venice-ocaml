@@ -80,16 +80,26 @@ let with_effort_w (m : 'c M.t) (f : ('c * M.reasoning_effort) M.t -> bool)
     : bool =
   Option.fold ~none:false ~some:f (M.reasoning_effort m)
 
+let with_tools_w (m : 'c M.t) (f : ('c * M.tools) M.t -> bool) : bool =
+  Option.fold ~none:false ~some:f (M.tools m)
+
+let with_schema_w (m : 'c M.t) (f : ('c * M.response_schema) M.t -> bool) :
+    bool =
+  Option.fold ~none:false ~some:f (M.response_schema m)
+
+let mk_tool (name : string) : (C.Tool.t, E.t) result =
+  C.Tool.function_ ~name ()
+
 let dec (negative : bool) (mantissa : int) (scale : int) : J.dec =
   { J.negative; mantissa; scale }
 
-(* Fixtures. chatty: text kind, both request-member capabilities, a
-   published effort menu, and both token limits; anyeffort asserts
+(* Fixtures. chatty: text kind, all four request-member capabilities,
+   a published effort menu, and both token limits; anyeffort asserts
    the effort capability with NO menu; ctxonly publishes a context
    window but no completion cap; uncapped publishes neither; codey
    and pixel probe the kind gate. *)
 let chatty : string =
-  {|{"id":"chatty","type":"text","capabilities":{"supportsReasoningEffort":true,"supportsLogProbs":true,"reasoningEffortOptions":["low","medium","high"]},"model_spec":{"availableContextTokens":4096,"maxCompletionTokens":2048}}|}
+  {|{"id":"chatty","type":"text","capabilities":{"supportsReasoningEffort":true,"supportsLogProbs":true,"supportsFunctionCalling":true,"supportsResponseSchema":true,"reasoningEffortOptions":["low","medium","high"]},"model_spec":{"availableContextTokens":4096,"maxCompletionTokens":2048}}|}
 
 let anyeffort : string =
   {|{"id":"anyeffort","type":"text","capabilities":{"supportsReasoningEffort":true}}|}
@@ -198,7 +208,8 @@ let checks : (string * bool) list =
          "venice_parameters"; "max_completion_tokens"; "stream";
          "stream_options"; "stop"; "stop_token_ids"; "seed"; "n";
          "logprobs"; "top_logprobs"; "reasoning_effort";
-         "prompt_cache_key"; "prompt_cache_retention" ]);
+         "prompt_cache_key"; "prompt_cache_retention"; "tools";
+         "tool_choice"; "parallel_tool_calls"; "response_format" ]);
     ("permuted optional order, reference bytes",
      on_model chatty
        { f =
@@ -666,6 +677,177 @@ let checks : (string * bool) list =
      rejects
        (CR.of_string "forever")
        "chat: prompt_cache_retention: unknown value forever");
+    (* tools / tool_choice / parallel_tool_calls / response_format
+       (M10a) *)
+    ("toggle tools minimal function",
+     on_model chatty
+       { f =
+           (fun m ->
+             with_tools_w m (fun tw ->
+                 chat_emits
+                   (let* t = mk_tool "f" in
+                    let* msgs = mk_msgs "hi" in
+                    C.make ~tools:(tw, [ t ]) m msgs ())
+                   (toggle
+                      {|"tools":[{"type":"function","function":{"name":"f"}}]|})))
+       });
+    ("toggle tools full function pair",
+     on_model chatty
+       { f =
+           (fun m ->
+             with_tools_w m (fun tw ->
+                 chat_emits
+                   (let* a =
+                      C.Tool.function_ ~name:"f" ~description:"adds"
+                        ~parameters:
+                          (J.Jobj
+                             [ ("type", J.Jstring "object");
+                               ("properties", J.Jobj []) ])
+                        ~strict:true ()
+                    in
+                    let* b = mk_tool "g" in
+                    let* msgs = mk_msgs "hi" in
+                    C.make ~tools:(tw, [ a; b ]) m msgs ())
+                   (toggle
+                      {|"tools":[{"type":"function","function":{"name":"f","description":"adds","parameters":{"type":"object","properties":{}},"strict":true}},{"type":"function","function":{"name":"g"}}]|})))
+       });
+    ("toggle tool_choice bare strings without tools (A6)",
+     on_model chatty
+       { f =
+           (fun m ->
+             List.for_all
+               (fun ((c : C.tool_choice), (w : string)) ->
+                 chat_emits
+                   (let* msgs = mk_msgs "hi" in
+                    C.make ~tool_choice:c m msgs ())
+                   (toggle ({|"tool_choice":|} ^ w)))
+               [ (C.Tool_auto, {|"auto"|}); (C.Tool_none, {|"none"|});
+                 (C.Tool_required, {|"required"|}) ]) });
+    ("toggle tool_choice function with tools",
+     on_model chatty
+       { f =
+           (fun m ->
+             with_tools_w m (fun tw ->
+                 chat_emits
+                   (let* t = mk_tool "f" in
+                    let* msgs = mk_msgs "hi" in
+                    C.make ~tools:(tw, [ t ])
+                      ~tool_choice:(C.Tool_function "f") m msgs ())
+                   (toggle
+                      {|"tools":[{"type":"function","function":{"name":"f"}}],"tool_choice":{"type":"function","function":{"name":"f"}}|})))
+       });
+    ("toggle parallel_tool_calls standalone (A6)",
+     on_model chatty
+       { f =
+           (fun m ->
+             chat_emits
+               (let* msgs = mk_msgs "hi" in
+                C.make ~parallel_tool_calls:false m msgs ())
+               (toggle {|"parallel_tool_calls":false|})) });
+    ("toggle response_format json_object",
+     on_model chatty
+       { f =
+           (fun m ->
+             chat_emits
+               (let* msgs = mk_msgs "hi" in
+                C.make ~response_format:C.Rf_json_object m msgs ())
+               (toggle {|"response_format":{"type":"json_object"}|})) });
+    ("toggle response_format json_schema",
+     on_model chatty
+       { f =
+           (fun m ->
+             with_schema_w m (fun rw ->
+                 chat_emits
+                   (let* msgs = mk_msgs "hi" in
+                    C.make
+                      ~response_format:
+                        (C.Rf_json_schema
+                           (rw, J.Jobj [ ("type", J.Jstring "object") ]))
+                      m msgs ())
+                   (toggle
+                      {|"response_format":{"type":"json_schema","json_schema":{"type":"object"}}|})))
+       });
+    ("all four M10a members follow prompt_cache_retention",
+     on_model chatty
+       { f =
+           (fun m ->
+             with_tools_w m (fun tw ->
+                 chat_emits
+                   (let* t = mk_tool "f" in
+                    let* msgs = mk_msgs "hi" in
+                    C.make ~cache_retention:CR.Extended ~tools:(tw, [ t ])
+                      ~tool_choice:C.Tool_auto ~parallel_tool_calls:true
+                      ~response_format:C.Rf_json_object m msgs ())
+                   (toggle
+                      {|"prompt_cache_retention":"extended","tools":[{"type":"function","function":{"name":"f"}}],"tool_choice":"auto","parallel_tool_calls":true,"response_format":{"type":"json_object"}|})))
+       });
+    ("empty tools list rejects",
+     on_model chatty
+       { f =
+           (fun m ->
+             with_tools_w m (fun tw ->
+                 rejects
+                   (let* msgs = mk_msgs "hi" in
+                    C.make ~tools:(tw, []) m msgs ())
+                   "chat: make: tools: empty list")) });
+    ("duplicate tool name rejects",
+     on_model chatty
+       { f =
+           (fun m ->
+             with_tools_w m (fun tw ->
+                 rejects
+                   (let* a = mk_tool "f" in
+                    let* b = mk_tool "f" in
+                    let* msgs = mk_msgs "hi" in
+                    C.make ~tools:(tw, [ a; b ]) m msgs ())
+                   "chat: make: tools: duplicate name f")) });
+    ("tool_choice function without tools rejects",
+     on_model chatty
+       { f =
+           (fun m ->
+             rejects
+               (let* msgs = mk_msgs "hi" in
+                C.make ~tool_choice:(C.Tool_function "f") m msgs ())
+               "chat: make: tool_choice: function without tools") });
+    ("tool_choice function not in tools rejects",
+     on_model chatty
+       { f =
+           (fun m ->
+             with_tools_w m (fun tw ->
+                 rejects
+                   (let* t = mk_tool "f" in
+                    let* msgs = mk_msgs "hi" in
+                    C.make ~tools:(tw, [ t ])
+                      ~tool_choice:(C.Tool_function "g") m msgs ())
+                   "chat: make: tool_choice: function g: not in tools")) });
+    ("json_schema non-object payload rejects",
+     on_model chatty
+       { f =
+           (fun m ->
+             with_schema_w m (fun rw ->
+                 rejects
+                   (let* msgs = mk_msgs "hi" in
+                    C.make
+                      ~response_format:
+                        (C.Rf_json_schema (rw, J.Jlist []))
+                      m msgs ())
+                   "chat: make: response_format: json_schema: not an object"))
+       });
+    ("Tool.function_ empty name rejects",
+     rejects (C.Tool.function_ ~name:"" ()) "chat: tool: name: empty string");
+    ("Tool.function_ empty description rejects",
+     rejects
+       (C.Tool.function_ ~name:"f" ~description:"" ())
+       "chat: tool: description: empty string");
+    ("Tool.function_ non-object parameters rejects",
+     rejects
+       (C.Tool.function_ ~name:"f" ~parameters:(J.Jstring "x") ())
+       "chat: tool: parameters: not an object");
+    ("tools witness absent without the capability (M10a)",
+     on_model uncapped { f = (fun m -> Option.is_none (M.tools m)) });
+    ("response_schema witness absent without the capability (M10a)",
+     on_model uncapped
+       { f = (fun m -> Option.is_none (M.response_schema m)) });
     (* A9 fixture activation *)
     ("fixture golden minimal (A9: skipped until fixtures/ lands)",
      fixture_minimal_matches)

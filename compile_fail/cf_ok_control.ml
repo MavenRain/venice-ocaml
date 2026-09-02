@@ -55,3 +55,33 @@ let chat (p : Venice.Model.packed) : (string, Venice.Error.t) result option
                   (Venice.Chat.make m msgs
                      ~effort:(w, Venice.Effort.Low) ()))))
       (Venice.Model.reasoning_effort m)
+
+(* M10a: witnessed tools + response_format on the SAME model row
+   compile, with the tool_choice and parallel_tool_calls members
+   along for the ride; the positive twin of cf_g and cf_h. *)
+let tool_chat (p : Venice.Model.packed) :
+    (string, Venice.Error.t) result option =
+  match p with
+  | Venice.Model.Pack m ->
+    Option.bind (Venice.Model.tools m) (fun tw ->
+        Option.map
+          (fun rw ->
+            Result.bind (Venice.Msg.user_text "hello") (fun u ->
+                Result.bind (Venice.Msg.nonempty [ u ]) (fun msgs ->
+                    Result.bind (Venice.Tool.function_ ~name:"f" ())
+                      (fun t ->
+                        Result.map Venice.Chat.emit
+                          (Venice.Chat.make m msgs ~tools:(tw, [ t ])
+                             ~tool_choice:(Venice.Chat.Tool_function "f")
+                             ~parallel_tool_calls:false
+                             ~response_format:
+                               (Venice.Chat.Rf_json_schema
+                                  (rw, Venice.Json.Jobj []))
+                             ())))))
+          (Venice.Model.response_schema m))
+
+(* M10a: the public Tool_call mint feeds Msg.assistant ~tool_calls
+   through the venice.mli boundary. *)
+let replay : (Venice.Msg.msg, Venice.Error.t) result =
+  Result.bind (Venice.Tool_call.make ~id:"c1" ~name:"f" ~arguments:"{}")
+    (fun tc -> Venice.Msg.assistant ~tool_calls:[ tc ] ())

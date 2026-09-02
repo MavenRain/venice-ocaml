@@ -97,6 +97,58 @@ module Thought_signature = struct
   type t = string
 end
 
+module Tool_call = struct
+  (* One assistant tool_calls item, exact by construction in the
+     Reasoning_detail tradition: the record wraps the raw JSON, so
+     re-emission preserves the member set AND order as received,
+     unknown members included (the swagger leaves the item shape
+     untyped; FACTS.md). The validated fields are stored typed so
+     the projections are total. Two mints: make builds the canonical
+     nested object, and the tool_call_of_json seam below parses a
+     received item strictly against the nested hypothesis shape. *)
+  type t =
+    { tc_id : string;
+      tc_name : string;
+      tc_args : string;
+      tc_raw : Jsonx.t }
+
+  let id (c : t) : string = c.tc_id
+  let name (c : t) : string = c.tc_name
+  let arguments (c : t) : string = c.tc_args
+
+  (* arguments parsed on demand; the wire member stays the exact
+     string either way. *)
+  let arguments_json (c : t) : (Jsonx.t, Errx.t) result =
+    Result.map_error
+      (fun ((_ : Errx.t)) ->
+        Errx.Msg_invalid "tool_call: arguments: not JSON")
+      (Jsonx.parse c.tc_args)
+
+  let to_json (c : t) : Jsonx.t = c.tc_raw
+
+  (* Canonical mint: the nested shape with type always present.
+     arguments stays any string by design: a caller replaying a
+     received call must not lose bytes to a well-formedness gate. *)
+  let make ~(id : string) ~(name : string) ~(arguments : string) :
+      (t, Errx.t) result =
+    match () with
+    | () when String.equal id "" -> invalid "tool_call: id: empty"
+    | () when String.equal name "" -> invalid "tool_call: name: empty"
+    | () ->
+      Ok
+        { tc_id = id;
+          tc_name = name;
+          tc_args = arguments;
+          tc_raw =
+            Jsonx.Jobj
+              [ ("id", Jsonx.Jstring id);
+                ("type", Jsonx.Jstring "function");
+                ( "function",
+                  Jsonx.Jobj
+                    [ ("name", Jsonx.Jstring name);
+                      ("arguments", Jsonx.Jstring arguments) ] ) ] }
+end
+
 (* Unbranded payloads (no type variable). *)
 type text_part =
   { tp_text : string;
@@ -120,7 +172,8 @@ type msg =
         content : string option;
         reasoning_content : string option;
         reasoning_details : Reasoning_detail.t list;
-        thought_signature : Thought_signature.t option }
+        thought_signature : Thought_signature.t option;
+        tool_calls : Tool_call.t list }
   | Mtool of
       { name : string option;
         tool_call_id : string;
@@ -237,32 +290,48 @@ let developer_parts ?name (parts : text_part list) :
   let* ps = nonempty_list "developer parts" parts in
   Ok (Mdeveloper { name; parts = ps })
 
-(* Extensible shape: the tools milestone adds ?tool_calls as an
-   optional argument, no API break. Content (or, at M10a, tool_calls)
-   is still required: the M10 reasoning passthrough members alone do
-   not make a legal assistant message. A passed ?reasoning_details:[]
-   is accepted and emits nothing (the label behaves as omitted):
-   neither schema sets minItems on reasoning_details, and the respx
-   Choice projection collapses absent and [] to the same [], so the
-   parse-then-passthrough call must not Error on a wire-legal
-   absent-or-empty array. *)
+(* Content or a nonempty tool_calls is required: the reasoning
+   passthrough members alone do not make a legal assistant message.
+   A passed ?reasoning_details:[] or ?tool_calls:[] is accepted and
+   emits nothing (the label behaves as omitted): neither schema sets
+   minItems, and the respx Choice projections collapse absent and []
+   to the same [], so the parse-then-passthrough call must not Error
+   on a wire-legal absent-or-empty array. When tool_calls is nonempty
+   a content of "" collapses to absent: the wire's null, absent and
+   "" variants agree there is no text on a tool-call turn, and respx
+   projects a wire "" faithfully as Some "", so the passthrough call
+   assistant ?content:(Choice.content c) must not Error there. With
+   tool_calls absent or empty, "" still rejects as empty. *)
 let assistant ?name ?content ?reasoning_content ?reasoning_details
-    ?thought_signature (() : unit) : (msg, Errx.t) result =
+    ?thought_signature ?tool_calls (() : unit) : (msg, Errx.t) result =
   let details : Reasoning_detail.t list =
     Option.fold ~none:[] ~some:Fun.id reasoning_details
   in
-  Option.fold
-    ~none:(invalid "assistant: content or tool_calls required")
-    ~some:(fun (s : string) ->
-      let* t = require_text "assistant content" s in
-      Ok
-        (Massistant
-           { name;
-             content = Some t;
-             reasoning_content;
-             reasoning_details = details;
-             thought_signature }))
-    content
+  let calls : Tool_call.t list =
+    Option.fold ~none:[] ~some:Fun.id tool_calls
+  in
+  let mk (c : string option) : msg =
+    Massistant
+      { name;
+        content = c;
+        reasoning_content;
+        reasoning_details = details;
+        thought_signature;
+        tool_calls = calls }
+  in
+  match calls with
+  | _ :: _ ->
+    Ok
+      (mk
+         (Option.bind content (fun (s : string) ->
+              if String.equal s "" then None else Some s)))
+  | [] ->
+    Option.fold
+      ~none:(invalid "assistant: content or tool_calls required")
+      ~some:(fun (s : string) ->
+        let* t = require_text "assistant content" s in
+        Ok (mk (Some t)))
+      content
 
 let tool ?name ~(tool_call_id : string) (s : string) :
     (msg, Errx.t) result =
@@ -323,11 +392,12 @@ let nonempty (msgs : 'c t list) : ('c nonempty, Errx.t) result =
    the bare-string content form, every other shape the array form.
    Tool content is always a bare string (the schema has no anyOf
    there). Assistant emits role, content, name, reasoning_content,
-   reasoning_details, thought_signature: the three M10 passthrough
-   members APPEND to the frozen M7 order, so every earlier golden
-   stays byte-identical, and each present member emits only when
-   present (reasoning_details only when nonempty, each item's raw
-   Jsonx.t verbatim). *)
+   reasoning_details, thought_signature, tool_calls: the three M10
+   passthrough members and then M10a's tool_calls APPEND to the
+   frozen M7 order, so every earlier golden stays byte-identical, and
+   each present member emits only when present (reasoning_details and
+   tool_calls only when nonempty, each item's raw Jsonx.t
+   verbatim). *)
 
 let cache_json (c : Cache.t) : Jsonx.t =
   match c with
@@ -357,6 +427,18 @@ let details_member (ds : Reasoning_detail.t list) :
           (List.map
              (fun (d : Reasoning_detail.t) -> d.Reasoning_detail.rd_raw)
              ds) )
+    ]
+
+(* An empty tool_calls list emits no member at all (the label behaves
+   as omitted); a nonempty one re-emits each item's raw object
+   verbatim. *)
+let tool_calls_member (cs : Tool_call.t list) : (string * Jsonx.t) list =
+  match cs with
+  | [] -> []
+  | _ :: _ ->
+    [ ( "tool_calls",
+        Jsonx.Jlist
+          (List.map (fun (c : Tool_call.t) -> c.Tool_call.tc_raw) cs) )
     ]
 
 let emit_text_part (p : text_part) : Jsonx.t =
@@ -422,13 +504,14 @@ let emit_plain (m : msg) : Jsonx.t =
        @ opt_string "name" name)
   | Massistant
       { name; content; reasoning_content; reasoning_details;
-        thought_signature } ->
+        thought_signature; tool_calls } ->
     Jsonx.Jobj
       ((role_member "assistant" :: opt_string "content" content)
        @ opt_string "name" name
        @ opt_string "reasoning_content" reasoning_content
        @ details_member reasoning_details
-       @ opt_string "thought_signature" thought_signature)
+       @ opt_string "thought_signature" thought_signature
+       @ tool_calls_member tool_calls)
   | Mtool { name; tool_call_id; content } ->
     Jsonx.Jobj
       ([ role_member "tool";
@@ -530,3 +613,61 @@ let reasoning_detail_of_json (j : Jsonx.t) :
     (Jsonx.as_obj j)
 
 let thought_signature_of_parsed (s : string) : Thought_signature.t = s
+
+(* Strict Tool_call mint against the nested hypothesis shape (the
+   swagger leaves tool_calls items untyped; FACTS.md): the item is an
+   object; id is a nonempty string; type, when PRESENT, is exactly
+   the string "function"; function is an object whose name is a
+   nonempty string and whose arguments is a string, held verbatim
+   and never parsed here. The whole item survives re-emission
+   verbatim, unknown members included. Same seam rationale as
+   reasoning_detail_of_json: M11 ssex / M14 streamx mint the
+   identical type from delta JSON. *)
+let tool_call_of_json (j : Jsonx.t) : (Tool_call.t, Errx.t) result =
+  let req_str (what : string) (o : Jsonx.t option) :
+      (string, Errx.t) result =
+    Option.fold
+      ~none:(invalid (what ^ ": missing"))
+      ~some:(fun v ->
+        Option.fold
+          ~none:(invalid (what ^ ": not a string"))
+          ~some:Result.ok (Jsonx.as_string v))
+      o
+  in
+  Option.fold
+    ~none:(invalid "tool_call: not an object")
+    ~some:(fun ((_ : (string * Jsonx.t) list)) ->
+      let* id = req_str "tool_call: id" (Jsonx.member "id" j) in
+      let* i = require_text "tool_call: id" id in
+      let* (() : unit) =
+        Option.fold ~none:(Ok ())
+          ~some:(fun tv ->
+            Option.fold
+              ~none:(invalid "tool_call: type: not function")
+              ~some:(fun (s : string) ->
+                if String.equal s "function" then Ok ()
+                else invalid "tool_call: type: not function")
+              (Jsonx.as_string tv))
+          (Jsonx.member "type" j)
+      in
+      let* f =
+        Option.fold
+          ~none:(invalid "tool_call: function: missing")
+          ~some:Result.ok (Jsonx.member "function" j)
+      in
+      let* (() : unit) =
+        Option.fold
+          ~none:(invalid "tool_call: function: not an object")
+          ~some:(fun ((_ : (string * Jsonx.t) list)) -> Ok ())
+          (Jsonx.as_obj f)
+      in
+      let* name =
+        req_str "tool_call: function.name" (Jsonx.member "name" f)
+      in
+      let* n = require_text "tool_call: function.name" name in
+      let* args =
+        req_str "tool_call: function.arguments"
+          (Jsonx.member "arguments" f)
+      in
+      Ok { Tool_call.tc_id = i; tc_name = n; tc_args = args; tc_raw = j })
+    (Jsonx.as_obj j)

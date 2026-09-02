@@ -5,8 +5,11 @@
    everywhere. Required members are enforced strictly (D7), the
    reasoning passthrough values are minted through the msgx seam so
    the parse output feeds Msgx.assistant directly (D2/D3), and a
-   tool-role choice message rejects the whole document (D8; tool_calls
-   typing is M10a). Response forgery stays a transport threat: M33
+   tool-role choice message rejects the whole document (D8).
+   message.tool_calls items are held raw at parse time; the typed
+   view Choice.tool_calls validates per item on demand (the swagger
+   leaves the item shape untyped, so item strictness is opt-in).
+   Response forgery stays a transport threat: M33
    consumes raw completion bytes at the transport, not this parser's
    output. Total, sans-io. *)
 
@@ -136,7 +139,9 @@ module Choice = struct
       reasoning_details : Msgx.Reasoning_detail.t list;
       thought_signature : Msgx.Thought_signature.t option;
       logprobs : Logprobs.t option;
-      stop_reason : Stop_reason.t option }
+      stop_reason : Stop_reason.t option;
+      tool_calls_raw : Jsonx.t list;
+      path : string }
 
   let finish (c : t) : Finish.t = c.finish
   let index (c : t) : int = c.index
@@ -151,6 +156,39 @@ module Choice = struct
 
   let logprobs (c : t) : Logprobs.t option = c.logprobs
   let stop_reason (c : t) : Stop_reason.t option = c.stop_reason
+  let tool_calls_raw (c : t) : Jsonx.t list = c.tool_calls_raw
+
+  (* The typed view over tool_calls_raw. Item validation lives HERE,
+     not in the document parse: the swagger leaves the item shape
+     untyped, so strictness against the nested hypothesis shape is
+     opt-in, and a foreign-shaped item must not reject a whole
+     response whose other members are fine. The first failing item
+     wins and the error carries its choices[i].tool_calls[j] path;
+     the msgx mint's own detail is kept, reprefixed Resp_invalid. *)
+  let item_detail (e : Errx.t) : string =
+    match e with
+    | Errx.Msg_invalid s -> s
+    | Errx.Hex_invalid _ | Errx.B64_invalid _ | Errx.Json_invalid _
+    | Errx.Model_invalid _ | Errx.Param_invalid _ | Errx.Head_invalid _
+    | Errx.Chat_invalid _ | Errx.Resp_invalid _ ->
+      Errx.to_string e
+
+  let tool_calls (c : t) : (Msgx.Tool_call.t list, Errx.t) result =
+    let rec go (j : int) (acc : Msgx.Tool_call.t list)
+        (rest : Jsonx.t list) : (Msgx.Tool_call.t list, Errx.t) result =
+      match rest with
+      | [] -> Ok (List.rev acc)
+      | item :: tl ->
+        Result.fold
+          ~ok:(fun (tc : Msgx.Tool_call.t) -> go (j + 1) (tc :: acc) tl)
+          ~error:(fun (e : Errx.t) ->
+            Error
+              (Errx.Resp_invalid
+                 (c.path ^ ".tool_calls[" ^ string_of_int j ^ "]: "
+                 ^ item_detail e)))
+          (Msgx.tool_call_of_json item)
+    in
+    go 0 [] c.tool_calls_raw
 end
 
 (* ---------- member helpers ---------- *)
@@ -425,12 +463,15 @@ let details_of (what : string) (o : Jsonx.t option) :
         invalid (what ^ ": not an array"))
     o
 
-(* M10 parses role:"assistant" choice messages only; a tool-role
-   message (the anyOf second branch) rejects the WHOLE document (D8:
-   all-or-nothing, so discarding the id/usage/cost of a mixed array
-   is impossible by construction). tool_calls in the message is
-   ignored, not an error, and finish_reason tool_calls still parses
-   so callers can detect and fail forward until M10a. *)
+(* role:"assistant" choice messages only, deliberately and
+   permanently: the swagger's two-arm response union puts a Tool
+   Message in choices, but no producer of that arm has been observed
+   (Venice runs the tool, the CALLER sends tool results in the
+   REQUEST), and D8's all-or-nothing rule forbids a partial choice
+   array, so a tool-role message rejects the WHOLE document with its
+   choices[i] path. Revisit only on a captured response carrying
+   one. message.tool_calls parses raw here (absent or null reads []);
+   item typing is the Choice.tool_calls view above. *)
 let choice_of (what : string) (j : Jsonx.t) : (Choice.t, Errx.t) result =
   let* (() : unit) = require_obj what j in
   let* finish =
@@ -454,7 +495,7 @@ let choice_of (what : string) (j : Jsonx.t) : (Choice.t, Errx.t) result =
   in
   let* (() : unit) =
     if String.equal role "assistant" then Ok ()
-    else invalid "choice message role"
+    else invalid (what ^ ".message.role: unsupported role " ^ role)
   in
   let* content = content_of (what ^ ".message.content") msg in
   let* reasoning_content =
@@ -484,6 +525,20 @@ let choice_of (what : string) (j : Jsonx.t) : (Choice.t, Errx.t) result =
           (Stop_reason.of_string_at (what ^ ".stop_reason") v))
       s
   in
+  (* Raw items only; absent and null collapse to [] (the request-side
+     schema marks the member nullable). A null or malformed ITEM is
+     kept verbatim: item strictness is the typed view's job. *)
+  let* tool_calls_raw =
+    Option.fold ~none:(Ok [])
+      ~some:(fun v ->
+        match v with
+        | Jsonx.Jnull -> Ok []
+        | Jsonx.Jlist items -> Ok items
+        | Jsonx.Jbool _ | Jsonx.Jint _ | Jsonx.Jdec _ | Jsonx.Jstring _
+        | Jsonx.Jobj _ ->
+          invalid (what ^ ".message.tool_calls: not an array"))
+      (Jsonx.member "tool_calls" msg)
+  in
   Ok
     { Choice.finish;
       index;
@@ -492,7 +547,9 @@ let choice_of (what : string) (j : Jsonx.t) : (Choice.t, Errx.t) result =
       reasoning_details = details;
       thought_signature = signature;
       logprobs;
-      stop_reason }
+      stop_reason;
+      tool_calls_raw;
+      path = what }
 
 (* i counts the position for error paths; the wire index member is
    data, not the address of the fault. Tail recursive: the choices

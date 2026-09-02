@@ -44,6 +44,44 @@ module Cache_retention : sig
   val of_string : string -> (t, Errx.t) result
 end
 
+module Tool : sig
+  (* One function tool definition (the swagger's misnamed "Tool
+     Call" item; FACTS.md). function_ avoids the OCaml keyword.
+     Server tools (web_search / x_search) are deferred: no
+     capability row gates them and their interaction with
+     venice_parameters' native-search flags is unresolved. *)
+  type t
+
+  val function_ :
+    name:string ->
+    ?description:string ->
+    ?parameters:Jsonx.t ->
+    ?strict:bool ->
+    unit ->
+    (t, Errx.t) result
+  (* name nonempty; description, when passed, nonempty; parameters,
+     when passed, a JSON object emitted verbatim *)
+end
+
+(* tool_choice (D7/A6). The three bare strings are legal without
+   ?tools (the chat schema's string arm is open; only /responses pins
+   the enum, FACTS.md); Tool_function requires ?tools and name
+   membership. *)
+type tool_choice =
+  | Tool_auto
+  | Tool_none
+  | Tool_required
+  | Tool_function of string
+
+(* response_format (D9/A1). The json_schema arm carries the
+   response_schema witness and the schema object VERBATIM (no OpenAI
+   name/schema wrapper; FACTS.md); json_object carries no witness (no
+   capability row asserts it; the swagger deprecates it in favor of
+   json_schema). *)
+type 'c format =
+  | Rf_json_object
+  | Rf_json_schema of ('c * Modelx.response_schema) Modelx.t * Jsonx.t
+
 type 'c t
 
 val make :
@@ -64,6 +102,10 @@ val make :
   ?effort:(('c * Modelx.reasoning_effort) Modelx.t * Effort.t) ->
   ?prompt_cache_key:string ->
   ?cache_retention:Cache_retention.t ->
+  ?tools:(('c * Modelx.tools) Modelx.t * Tool.t list) ->
+  ?tool_choice:tool_choice ->
+  ?parallel_tool_calls:bool ->
+  ?response_format:'c format ->
   'c Modelx.t ->
   'c Msgx.nonempty ->
   unit ->
@@ -74,7 +116,11 @@ val make :
    witness-gated and top_logprobs (>= 0) rejects without logprobs
    (A3); effort is witness-gated with reasoningEffortOptions
    membership when published (A1); stop_token_ids nonempty, each
-   >= 0; prompt_cache_key nonempty. *)
+   >= 0; prompt_cache_key nonempty; tools is witness-gated, nonempty,
+   duplicate-free by function name (D6); tool_choice's bare strings
+   pass alone, Tool_function requires ?tools and membership (A6);
+   parallel_tool_calls is a standalone bool (A6); response_format's
+   json_schema arm is witness-gated with an object payload (A1). *)
 
 val budget : 'c t -> prompt_tokens:int -> (unit, Errx.t) result
 (* D4(b) advisory check: prompt_tokens + effective completion must

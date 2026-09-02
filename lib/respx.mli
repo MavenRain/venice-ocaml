@@ -25,6 +25,13 @@
      reads []; message.reasoning_details null reads [];
      logprobs.top_logprobs null reads []; logprobs bytes null (flat
      record and entries) reads None; cost null reads None.
+     message.tool_calls absent or null reads [] too (the request-side
+     schema does mark that member nullable).
+   - Item-strictness split: message.tool_calls ITEMS are held raw by
+     the document parse (the swagger leaves the item shape untyped),
+     so a malformed item never rejects the document; validation
+     against the nested hypothesis shape lives on the typed
+     Choice.tool_calls view alone.
 
    Extra strictness beyond the D7 floors: logprobs bytes items are
    narrowed to wire integers although the schema types them number,
@@ -35,8 +42,8 @@
 
 module Finish : sig
   (* finish_reason wire enum, closed; transparent by design.
-     Tool_calls parses even though tool_calls typing is M10a, so
-     callers can detect and fail forward. *)
+     Tool_calls signals a tool-call turn: read the calls through
+     Choice.tool_calls. *)
   type t =
     | Stop
     | Length
@@ -115,9 +122,10 @@ module Choice : sig
      the wire sent one string. content "" and content [] are both
      wire-legal (the schema sets no minLength or minItems): the
      string "" projects to Some "" (the faithful reading;
-     Msgx.assistant then rejects it as empty, SDK-imposed strictness
-     until M10a's tool_calls arrives), while the empty parts array
-     projects to None (no parts, no text). reasoning_details
+     Msgx.assistant rejects it as empty on a text-only turn but
+     collapses it to absent when tool_calls is nonempty, so the
+     passthrough call round-trips either way), while the empty parts
+     array projects to None (no parts, no text). reasoning_details
      collapses absent, null and [] to the same [], so the
      parse-then-passthrough call Msgx.assistant
      ?reasoning_details:(Some (reasoning_details c))
@@ -132,6 +140,15 @@ module Choice : sig
   val thought_signature : t -> Msgx.Thought_signature.t option
   val logprobs : t -> Logprobs.t option
   val stop_reason : t -> Stop_reason.t option
+
+  val tool_calls_raw : t -> Jsonx.t list
+  (* message.tool_calls items verbatim; absent or null reads [], and
+     the document parse never inspects an item *)
+
+  val tool_calls : t -> (Msgx.Tool_call.t list, Errx.t) result
+  (* the typed view: each raw item through the strict Tool_call mint;
+     the first failure wins and carries its choices[i].tool_calls[j]
+     path *)
 end
 
 type t

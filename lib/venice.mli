@@ -254,6 +254,11 @@ module Model : sig
   (* logprobs request-member capability marker (wire
      supportsLogProbs). *)
 
+  type response_schema
+  (* response_format json_schema capability marker (wire
+     supportsResponseSchema). Gates the schema arm only: json_object
+     carries no witness. *)
+
   type 'caps t
   type packed = Pack : 'c t -> packed
 
@@ -318,6 +323,9 @@ module Model : sig
 
   val log_probs : 'c t -> ('c * log_probs) t option
   (* Some iff the listing asserts supportsLogProbs *)
+
+  val response_schema : 'c t -> ('c * response_schema) t option
+  (* Some iff the listing asserts supportsResponseSchema *)
 
   type 'c media =
     { vision : ('c * vision) t option;
@@ -393,6 +401,39 @@ module Thought_signature : sig
   type t
 end
 
+module Tool_call : sig
+  (* One assistant tool_calls item, exact by construction: the value
+     wraps raw JSON, so re-emission preserves the member set and
+     order as received, unknown members included (the swagger leaves
+     the item shape untyped; FACTS.md). Two sources only: make below
+     builds the canonical nested object {id; type:"function";
+     function:{name; arguments}}, and Response.Choice.tool_calls
+     mints from a parsed response. This interface exposes no
+     of_json; the Reasoning_detail doctrine-not-enforcement scope
+     note applies. *)
+  type t
+
+  val make :
+    id:string -> name:string -> arguments:string -> (t, Error.t) result
+  (* id and name must be nonempty; arguments is any string by design
+     (a replayed item must not lose bytes to a well-formedness
+     gate) *)
+
+  val id : t -> string
+
+  val name : t -> string
+  (* function.name *)
+
+  val arguments : t -> string
+  (* function.arguments, the exact wire string *)
+
+  val arguments_json : t -> (Json.t, Error.t) result
+  (* arguments parsed on demand; Error when it is not JSON *)
+
+  val to_json : t -> Json.t
+  (* the raw item verbatim *)
+end
+
 module Msg : sig
   (* Typed chat messages. Branded values (media parts, user messages,
      'c nonempty) carry the phantom base row 'c of the witnessed
@@ -438,21 +479,30 @@ module Msg : sig
     ?reasoning_content:string ->
     ?reasoning_details:Reasoning_detail.t list ->
     ?thought_signature:Thought_signature.t ->
+    ?tool_calls:Tool_call.t list ->
     unit ->
     (msg, Error.t) result
-  (* content (or, at M10a, tool_calls) is still required: the
-     reasoning passthrough members alone do not make a legal
-     assistant message. ?reasoning_details:[] is accepted and emits
-     nothing (the label behaves as omitted), so the
-     parse-then-passthrough call Response.Choice feeds directly. The
-     tools milestone adds ?tool_calls as a pure optional-argument
-     addition, no API break *)
+  (* content or a nonempty tool_calls is required: the reasoning
+     passthrough members alone do not make a legal assistant
+     message. ?reasoning_details:[] and ?tool_calls:[] are accepted
+     and emit nothing (the label behaves as omitted), so the
+     parse-then-passthrough call Response.Choice feeds directly.
+     When tool_calls is nonempty, content "" collapses to absent
+     (the wire's null, absent and "" agree there is no text on a
+     tool-call turn); with tool_calls absent or empty, "" rejects
+     as empty *)
 
   val tool :
     ?name:string ->
     tool_call_id:string ->
     string ->
     (msg, Error.t) result
+  (* the request Tool Message also declares reasoning_content and its
+     own tool_calls (both nullable and not required; FACTS.md). Both
+     stay unexposed deliberately: a caller-sent tool RESULT has no
+     producer semantics for model reasoning or for nested calls, so
+     the SDK omits the two members rather than invent a meaning for
+     them *)
 
   (* Branded parts: the brand is the PRE-extraction base row of the
      witnessed model. Extract every witness from the SAME base model;
@@ -691,9 +741,9 @@ module Head : sig
     (failure option, Error.t) result
 end
 
-(* M9 chat request domain. Stop, Effort, and Cache_retention are
-   hoisted satellites of Chat, like Audio_format/Cache ahead of Msg
-   and Reset_at..Tier ahead of Head. *)
+(* M9 chat request domain. Stop, Effort, Cache_retention, and (from
+   M10a) Tool are hoisted satellites of Chat, like Audio_format/Cache
+   ahead of Msg and Reset_at..Tier ahead of Head. *)
 
 module Stop : sig
   (* The stop member: one sequence (of_string) or 1..4 sequences
@@ -739,6 +789,25 @@ module Cache_retention : sig
   val of_string : string -> (t, Error.t) result
 end
 
+module Tool : sig
+  (* One function tool definition (the swagger's misnamed "Tool
+     Call" item; FACTS.md). function_ avoids the OCaml keyword.
+     Server tools (web_search / x_search) are deferred: no
+     capability row gates them and their interaction with
+     venice_parameters' native-search flags is unresolved. *)
+  type t
+
+  val function_ :
+    name:string ->
+    ?description:string ->
+    ?parameters:Json.t ->
+    ?strict:bool ->
+    unit ->
+    (t, Error.t) result
+  (* name nonempty; description, when passed, nonempty; parameters,
+     when passed, a JSON object emitted verbatim *)
+end
+
 module Chat : sig
   (* The chat request: built by the one mint below, never assembled
      by hand. The phantom 'c ties the model witness, the messages
@@ -754,6 +823,27 @@ module Chat : sig
      is deprecated wire surface and never emitted. The emission
      member order is frozen and SDK-owned; absent optionals are never
      emitted, and no member is ever emitted as null. *)
+
+  (* tool_choice. The three bare strings are legal without ?tools
+     (the chat schema's string arm is open; only the /responses
+     schema pins the enum, FACTS.md); Tool_function requires ?tools
+     and name membership. *)
+  type tool_choice =
+    | Tool_auto
+    | Tool_none
+    | Tool_required
+    | Tool_function of string
+
+  (* response_format. The json_schema arm carries the
+     Model.response_schema witness and the schema object VERBATIM
+     (Venice takes the schema directly under the json_schema member,
+     no OpenAI name/schema wrapper; FACTS.md); json_object carries
+     no witness (no capability row asserts it; the swagger
+     deprecates it in favor of json_schema). *)
+  type 'c format =
+    | Rf_json_object
+    | Rf_json_schema of ('c * Model.response_schema) Model.t * Json.t
+
   type 'c t
 
   val make :
@@ -774,6 +864,10 @@ module Chat : sig
     ?effort:(('c * Model.reasoning_effort) Model.t * Effort.t) ->
     ?prompt_cache_key:string ->
     ?cache_retention:Cache_retention.t ->
+    ?tools:(('c * Model.tools) Model.t * Tool.t list) ->
+    ?tool_choice:tool_choice ->
+    ?parallel_tool_calls:bool ->
+    ?response_format:'c format ->
     'c Model.t ->
     'c Msg.nonempty ->
     unit ->
@@ -786,8 +880,14 @@ module Chat : sig
      Model.reasoning_effort witness from the SAME model row and, when
      the model publishes reasoningEffortOptions, membership in that
      list; stop_token_ids nonempty with every id >= 0;
-     prompt_cache_key nonempty. venice_parameters is emitted only
-     when non-empty. *)
+     prompt_cache_key nonempty; tools requires the Model.tools
+     witness from the SAME row, with a nonempty list whose function
+     names are pairwise distinct; tool_choice's bare strings pass
+     alone while Tool_function requires ?tools and membership;
+     parallel_tool_calls is a standalone bool; response_format's
+     json_schema arm requires the Model.response_schema witness and
+     an object payload. venice_parameters is emitted only when
+     non-empty. *)
 
   val budget : 'c t -> prompt_tokens:int -> (unit, Error.t) result
   (* Advisory context budget, separate from the mint: the SDK has no
@@ -810,14 +910,17 @@ end
    never sets additionalProperties: false); required members, the
    closed enums, and the >= 0 floors are enforced. logprobs is the
    one deliberate required-list tolerance: absent-or-null reads None
-   (the swagger's own example bodies show logprobs: null). Streaming
-   deltas are M11; tool_calls typing is M10a. *)
+   (the swagger's own example bodies show logprobs: null).
+   message.tool_calls items are held raw by the document parse and
+   validated per item on the typed Choice.tool_calls view (the
+   swagger leaves the item shape untyped). Streaming deltas are
+   M11. *)
 
 module Response : sig
   module Finish : sig
     (* finish_reason wire enum, closed; transparent by design.
-       Tool_calls parses even though tool_calls typing is M10a, so
-       callers can detect and fail forward. *)
+       Tool_calls signals a tool-call turn: read the calls through
+       Choice.tool_calls. *)
     type t =
       | Stop
       | Length
@@ -897,12 +1000,13 @@ module Response : sig
        concatenated in received order (a projection, not a claim the
        wire sent one string). content "" and content [] are both
        wire-legal: the string "" projects to Some "" (the faithful
-       reading; Msg.assistant then rejects it as empty, SDK-imposed
-       strictness until M10a's tool_calls arrives), while the empty
-       parts array projects to None. reasoning_details collapses
-       absent, null and [] to the same [], so Msg.assistant
-       ?reasoning_details:(Some (reasoning_details c)) round-trips
-       without Error. *)
+       reading; Msg.assistant rejects it as empty on a text-only
+       turn but collapses it to absent when tool_calls is nonempty,
+       so the passthrough call round-trips either way), while the
+       empty parts array projects to None. reasoning_details
+       collapses absent, null and [] to the same [], so
+       Msg.assistant ?reasoning_details:(Some (reasoning_details c))
+       round-trips without Error. *)
     type t
 
     val finish : t -> Finish.t
@@ -913,6 +1017,17 @@ module Response : sig
     val thought_signature : t -> Thought_signature.t option
     val logprobs : t -> Logprobs.t option
     val stop_reason : t -> Stop_reason.t option
+
+    val tool_calls_raw : t -> Json.t list
+    (* message.tool_calls items verbatim; absent or null reads [],
+       and the document parse never inspects an item *)
+
+    val tool_calls : t -> (Tool_call.t list, Error.t) result
+    (* the typed view: each raw item through the strict Tool_call
+       mint (id nonempty; type, when present, "function";
+       function.name nonempty; function.arguments a string held
+       verbatim); the first failure wins and carries its
+       choices[i].tool_calls[j] path *)
   end
 
   type t

@@ -116,6 +116,7 @@ let checks : (string * bool) list =
     (* full model witnesses: every relevant flag is true *)
     ("full vision", on_model full { f = (fun m -> Option.is_some (M.vision m)) });
     ("full tools", on_model full { f = (fun m -> Option.is_some (M.tools m)) });
+    ("full response_schema", on_model full { f = (fun m -> Option.is_some (M.response_schema m)) });
     ("full reasoning", on_model full { f = (fun m -> Option.is_some (M.reasoning m)) });
     ("full audio", on_model full { f = (fun m -> Option.is_some (M.audio m)) });
     ("full tee", on_model full { f = (fun m -> Option.is_some (M.tee m)) });
@@ -145,6 +146,7 @@ let checks : (string * bool) list =
     ("minimal deprecation", on_model minimal { f = (fun m -> M.deprecation m = M.Active) });
     ("minimal vision none", on_model minimal { f = (fun m -> Option.is_none (M.vision m)) });
     ("minimal tools none", on_model minimal { f = (fun m -> Option.is_none (M.tools m)) });
+    ("minimal response_schema none", on_model minimal { f = (fun m -> Option.is_none (M.response_schema m)) });
     ("minimal e2ee none", on_model minimal { f = (fun m -> Option.is_none (M.e2ee m)) });
     (* sparse: false and absent flags read None, the true one mints *)
     ("sparse privacy", on_model sparse { f = (fun m -> M.privacy m = Some M.Anonymized) });

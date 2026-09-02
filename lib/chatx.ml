@@ -103,6 +103,89 @@ module Cache_retention = struct
     | other -> invalid ("prompt_cache_retention: unknown value " ^ other)
 end
 
+module Tool = struct
+  (* One function tool definition (the swagger's misnamed "Tool
+     Call" item; FACTS.md). function_ avoids the OCaml keyword. The
+     optional wire id member is not exposed: no caller semantics
+     exist for it. Server tools (web_search / x_search) are
+     deferred: no capability row gates them and their interaction
+     with venice_parameters' native-search flags is unresolved. *)
+  type t =
+    { t_name : string;
+      t_description : string option;
+      t_parameters : Jsonx.t option;
+      t_strict : bool option }
+
+  let function_ ~(name : string) ?(description : string option)
+      ?(parameters : Jsonx.t option) ?(strict : bool option) (() : unit)
+      : (t, Errx.t) result =
+    let mk (() : unit) : t =
+      { t_name = name;
+        t_description = description;
+        t_parameters = parameters;
+        t_strict = strict }
+    in
+    match () with
+    | () when String.equal name "" -> invalid "tool: name: empty string"
+    | () when Option.fold ~none:false ~some:(String.equal "") description
+      ->
+      invalid "tool: description: empty string"
+    | () ->
+      Option.fold
+        ~none:(Ok (mk ()))
+        ~some:(fun (p : Jsonx.t) ->
+          Option.fold
+            ~none:(invalid "tool: parameters: not an object")
+            ~some:(fun ((_ : (string * Jsonx.t) list)) -> Ok (mk ()))
+            (Jsonx.as_obj p))
+        parameters
+
+  (* {type:"function", function:{name; description?; parameters?;
+     strict?}}; present members only, the schema object verbatim. *)
+  let to_json (t : t) : Jsonx.t =
+    Jsonx.Jobj
+      [ ("type", Jsonx.Jstring "function");
+        ( "function",
+          Jsonx.Jobj
+            (("name", Jsonx.Jstring t.t_name)
+             :: (Option.fold ~none:[]
+                   ~some:(fun (d : string) ->
+                     [ ("description", Jsonx.Jstring d) ])
+                   t.t_description
+                @ Option.fold ~none:[]
+                    ~some:(fun (p : Jsonx.t) -> [ ("parameters", p) ])
+                    t.t_parameters
+                @ Option.fold ~none:[]
+                    ~some:(fun (b : bool) -> [ ("strict", Jsonx.Jbool b) ])
+                    t.t_strict)) ) ]
+end
+
+(* tool_choice (D7/A6). The three bare strings are legal without
+   ?tools: the chat schema's string arm is an open string (only the
+   /responses schema pins auto|none|required; FACTS.md) and none of
+   the three names a tool. Tool_function names one, so it requires
+   ?tools and name membership. *)
+type tool_choice =
+  | Tool_auto
+  | Tool_none
+  | Tool_required
+  | Tool_function of string
+
+(* response_format (D9/A1). The json_schema arm carries the
+   response_schema witness and the schema object VERBATIM (Venice
+   takes the schema directly under the json_schema member, no OpenAI
+   name/schema wrapper; FACTS.md). json_object carries no witness:
+   no capability row asserts it, and the swagger deprecates it in
+   favor of json_schema. *)
+type 'c format =
+  | Rf_json_object
+  | Rf_json_schema of ('c * Modelx.response_schema) Modelx.t * Jsonx.t
+
+(* The witness-erased response_format payload. *)
+type format_repr =
+  | Rjson_object
+  | Rjson_schema of Jsonx.t
+
 (* The erased request repr. messages is stored already emitted through
    the one msgx seam (Msgx.emit), so the brand erases here exactly as
    it does in msgx; the model's context window and completion cap are
@@ -129,7 +212,11 @@ type repr =
     top_logprobs : int option;
     effort : Effort.t option;
     prompt_cache_key : string option;
-    cache_retention : Cache_retention.t option }
+    cache_retention : Cache_retention.t option;
+    tools : Tool.t list option;
+    tool_choice : tool_choice option;
+    parallel_tool_calls : bool option;
+    response_format : format_repr option }
 
 type 'c t = repr
 
@@ -232,6 +319,66 @@ let check_cache_key (key : string option) : (unit, Errx.t) result =
       else Ok ())
     key
 
+(* D6: a passed tools list is nonempty with pairwise-distinct
+   function names (the wire dedupes nothing; a duplicate is a caller
+   bug worth naming at mint). *)
+let check_tools (ts : Tool.t list) : (unit, Errx.t) result =
+  match ts with
+  | [] -> invalid "make: tools: empty list"
+  | _ :: _ ->
+    Result.map
+      (fun ((_ : string list)) -> ())
+      (List.fold_left
+         (fun (acc : (string list, Errx.t) result) (t : Tool.t) ->
+           let* seen = acc in
+           if List.exists (String.equal t.Tool.t_name) seen then
+             invalid ("make: tools: duplicate name " ^ t.Tool.t_name)
+           else Ok (t.Tool.t_name :: seen))
+         (Ok []) ts)
+
+(* A6: the bare strings pass with or without ?tools; Tool_function
+   names a tool, so it requires ?tools and name membership. *)
+let check_tool_choice (ts : Tool.t list option) (tc : tool_choice option)
+    : (unit, Errx.t) result =
+  Option.fold ~none:(Ok ())
+    ~some:(fun (c : tool_choice) ->
+      match c with
+      | Tool_auto | Tool_none | Tool_required -> Ok ()
+      | Tool_function n ->
+        Option.fold
+          ~none:(invalid "make: tool_choice: function without tools")
+          ~some:(fun (tools : Tool.t list) ->
+            if
+              List.exists
+                (fun (t : Tool.t) -> String.equal t.Tool.t_name n)
+                tools
+            then Ok ()
+            else
+              invalid
+                ("make: tool_choice: function " ^ n ^ ": not in tools"))
+          ts)
+    tc
+
+(* A1: the witness is the static json_schema gate; the one runtime
+   check is that the payload is a JSON object. *)
+let check_format (f : 'c format option) : (unit, Errx.t) result =
+  Option.fold ~none:(Ok ())
+    ~some:(fun (v : 'c format) ->
+      match v with
+      | Rf_json_object -> Ok ()
+      | Rf_json_schema (_, j) ->
+        Option.fold
+          ~none:
+            (invalid "make: response_format: json_schema: not an object")
+          ~some:(fun ((_ : (string * Jsonx.t) list)) -> Ok ())
+          (Jsonx.as_obj j))
+    f
+
+let erase_format (f : 'c format) : format_repr =
+  match f with
+  | Rf_json_object -> Rjson_object
+  | Rf_json_schema (_, j) -> Rjson_schema j
+
 (* The one mint. Optionals first with a trailing unit so every
    optional stays erasable (A4, msgx warning-16 precedent); the
    sampling newtypes arrive ALREADY MINTED (D13), so no constraint
@@ -250,7 +397,11 @@ let make ?(temperature : Paramsx.Temp.t option)
     ?(top_logprobs : int option)
     ?(effort : (('c * Modelx.reasoning_effort) Modelx.t * Effort.t) option)
     ?(prompt_cache_key : string option)
-    ?(cache_retention : Cache_retention.t option) (model : 'c Modelx.t)
+    ?(cache_retention : Cache_retention.t option)
+    ?(tools : (('c * Modelx.tools) Modelx.t * Tool.t list) option)
+    ?(tool_choice : tool_choice option)
+    ?(parallel_tool_calls : bool option)
+    ?(response_format : 'c format option) (model : 'c Modelx.t)
     (msgs : 'c Msgx.nonempty) (() : unit) : ('c t, Errx.t) result =
   let* () = check_kind model in
   let* () = check_min "max_completion" 1 max_completion in
@@ -269,6 +420,14 @@ let make ?(temperature : Paramsx.Temp.t option)
   in
   let* () = check_stop_token_ids stop_token_ids in
   let* () = check_cache_key prompt_cache_key in
+  let* () =
+    Option.fold ~none:(Ok ())
+      ~some:(fun ((_, ts) : ('c * Modelx.tools) Modelx.t * Tool.t list) ->
+        check_tools ts)
+      tools
+  in
+  let* () = check_tool_choice (Option.map snd tools) tool_choice in
+  let* () = check_format response_format in
   Ok
     { model = Modelx.id model;
       messages = Msgx.emit msgs;
@@ -290,7 +449,11 @@ let make ?(temperature : Paramsx.Temp.t option)
       top_logprobs;
       effort = Option.map snd effort;
       prompt_cache_key;
-      cache_retention }
+      cache_retention;
+      tools = Option.map snd tools;
+      tool_choice;
+      parallel_tool_calls;
+      response_format = Option.map erase_format response_format }
 
 (* D4(b): advisory context budget, separate from the mint (a mint
    gate would force every caller to invent an estimate and train them
@@ -343,7 +506,11 @@ let member_order (() : unit) : string list =
     "top_logprobs";
     "reasoning_effort";
     "prompt_cache_key";
-    "prompt_cache_retention" ]
+    "prompt_cache_retention";
+    "tools";
+    "tool_choice";
+    "parallel_tool_calls";
+    "response_format" ]
 
 let opt_member (name : string) (f : 'a -> Jsonx.t) (v : 'a option) :
     (string * Jsonx.t) list =
@@ -359,6 +526,29 @@ let venice_member (v : Paramsx.Venice_params.t option) :
       if Paramsx.Venice_params.is_empty p then []
       else [ ("venice_parameters", Paramsx.Venice_params.to_json p) ])
     v
+
+(* tool_choice wire forms (D7): the three bare strings, or
+   {type:"function", function:{name}}. *)
+let tool_choice_json (c : tool_choice) : Jsonx.t =
+  match c with
+  | Tool_auto -> Jsonx.Jstring "auto"
+  | Tool_none -> Jsonx.Jstring "none"
+  | Tool_required -> Jsonx.Jstring "required"
+  | Tool_function n ->
+    Jsonx.Jobj
+      [ ("type", Jsonx.Jstring "function");
+        ("function", Jsonx.Jobj [ ("name", Jsonx.Jstring n) ]) ]
+
+(* response_format wire forms (D9): {type:"json_object"}, or
+   {type:"json_schema", json_schema: <the schema object verbatim>}
+   (the schema sits directly under json_schema, no OpenAI name/schema
+   wrapper; FACTS.md). *)
+let format_json (f : format_repr) : Jsonx.t =
+  match f with
+  | Rjson_object -> Jsonx.Jobj [ ("type", Jsonx.Jstring "json_object") ]
+  | Rjson_schema j ->
+    Jsonx.Jobj
+      [ ("type", Jsonx.Jstring "json_schema"); ("json_schema", j) ]
 
 (* Every present member, keyed for the order fold below. stream and
    include_usage arrive per call (A7): streaming is chosen at the
@@ -415,7 +605,15 @@ let present_members (stream : bool option) (include_usage : bool option)
       opt_member "prompt_cache_retention"
         (fun (r : Cache_retention.t) ->
           Jsonx.Jstring (Cache_retention.to_string r))
-        t.cache_retention ]
+        t.cache_retention;
+      opt_member "tools"
+        (fun (ts : Tool.t list) -> Jsonx.Jlist (List.map Tool.to_json ts))
+        t.tools;
+      opt_member "tool_choice" tool_choice_json t.tool_choice;
+      opt_member "parallel_tool_calls"
+        (fun (b : bool) -> Jsonx.Jbool b)
+        t.parallel_tool_calls;
+      opt_member "response_format" format_json t.response_format ]
 
 (* The emitter folds over the ONE frozen literal above (A8); a member
    absent from present_members simply never emits. *)

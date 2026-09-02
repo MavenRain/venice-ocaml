@@ -68,6 +68,37 @@ module Thought_signature : sig
   type t
 end
 
+module Tool_call : sig
+  (* One assistant tool_calls item, exact by construction: the value
+     wraps raw JSON, so re-emission preserves the member set and
+     order as received, unknown members included (the swagger leaves
+     the item shape untyped; FACTS.md). Two mints: make builds the
+     canonical nested object {id; type:"function"; function:{name;
+     arguments}} for replay, and the tool_call_of_json seam below
+     parses a received item strictly. The projections are total:
+     the mints validated the fields they read. *)
+  type t
+
+  val make :
+    id:string -> name:string -> arguments:string -> (t, Errx.t) result
+  (* id and name must be nonempty; arguments is any string by design
+     (a replayed item must not lose bytes to a well-formedness
+     gate) *)
+
+  val id : t -> string
+  val name : t -> string
+  (* function.name *)
+
+  val arguments : t -> string
+  (* function.arguments, the exact wire string *)
+
+  val arguments_json : t -> (Jsonx.t, Errx.t) result
+  (* arguments parsed on demand; Msg_invalid when it is not JSON *)
+
+  val to_json : t -> Jsonx.t
+  (* the raw item verbatim *)
+end
+
 (* Unbranded payloads: no type variable, bind once at structure level,
    reuse across models. The injections below instantiate the row per
    use site inside each Pack continuation. *)
@@ -102,16 +133,26 @@ val assistant :
   ?reasoning_content:string ->
   ?reasoning_details:Reasoning_detail.t list ->
   ?thought_signature:Thought_signature.t ->
+  ?tool_calls:Tool_call.t list ->
   unit ->
   (msg, Errx.t) result
-(* content (or, at M10a, tool_calls) is still required: the reasoning
+(* content or a nonempty tool_calls is required: the reasoning
    passthrough members alone do not make a legal assistant message.
-   ?reasoning_details:[] is accepted and emits nothing (the label
-   behaves as omitted). The tools milestone adds ?tool_calls as a
-   pure optional-argument addition, no API break *)
+   ?reasoning_details:[] and ?tool_calls:[] are accepted and emit
+   nothing (the label behaves as omitted). When tool_calls is
+   nonempty, content "" collapses to absent (respx projects a wire ""
+   faithfully; the passthrough call must not Error on a tool-call
+   turn); with tool_calls absent or empty, "" still rejects as
+   empty *)
 
 val tool :
   ?name:string -> tool_call_id:string -> string -> (msg, Errx.t) result
+(* the request Tool Message also declares reasoning_content and its
+   own tool_calls (swagger 1081-1109, both nullable and not
+   required). Both stay unexposed deliberately (D3): a caller-sent
+   tool RESULT has no producer semantics for model reasoning or for
+   nested calls, so the SDK omits the two members rather than invent
+   a meaning for them *)
 
 (* Branded parts: the brand is the PRE-extraction base row of the
    witnessed model. *)
@@ -190,3 +231,13 @@ val reasoning_detail_of_json :
 
 val thought_signature_of_parsed : string -> Thought_signature.t
 (* the one Thought_signature mint; same seam rationale *)
+
+val tool_call_of_json : Jsonx.t -> (Tool_call.t, Errx.t) result
+(* the one parse-side Tool_call mint: strict against the nested
+   hypothesis shape (id nonempty string; type, when present, exactly
+   "function"; function.name nonempty string; function.arguments a
+   string held verbatim), keeps every member verbatim. Named here
+   rather than respx-private for the reasoning_detail_of_json
+   reason: M11 ssex / M14 streamx mint the identical type from
+   delta JSON. venice.mli re-exports make and the projections but
+   not this seam *)

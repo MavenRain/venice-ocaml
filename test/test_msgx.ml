@@ -64,6 +64,14 @@ let emits_str (r : (string, E.t) result) (expect : string) : bool =
 
 let emit_msg (m : Msg.msg) : J.t = Msg.emit_message (Msg.lift m)
 
+(* M10a tool_call helpers: parse-side mint and one canonical made
+   call. *)
+let tc_of (s : string) : (Msg.Tool_call.t, E.t) result =
+  Result.bind (J.parse s) Msg.tool_call_of_json
+
+let mk_tc : (Msg.Tool_call.t, E.t) result =
+  Msg.Tool_call.make ~id:"c1" ~name:"f" ~arguments:"{}"
+
 let plain (r : ('c Msg.t, E.t) result) (expect : string option) : bool =
   Result.fold
     ~ok:(fun m -> Msg.content_plaintext m = expect)
@@ -299,6 +307,148 @@ let checks : (string * bool) list =
      rejects
        (Msg.assistant ~reasoning_content:"rc" ())
        "msg: assistant: content or tool_calls required");
+    (* assistant tool_calls (M10a) *)
+    ("assistant tool_calls only emits",
+     emits
+       (let* tc = mk_tc in
+        Msg.assistant ~tool_calls:[ tc ] ())
+       emit_msg
+       {|{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}|});
+    ("assistant empty content with tool_calls collapses to absent",
+     emits
+       (let* tc = mk_tc in
+        Msg.assistant ~content:"" ~tool_calls:[ tc ] ())
+       emit_msg
+       {|{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}|});
+    ("assistant content and tool_calls emit with tool_calls last",
+     emits
+       (let* tc = mk_tc in
+        Msg.assistant ~name:"bot" ~content:"ok" ~tool_calls:[ tc ] ())
+       emit_msg
+       {|{"role":"assistant","content":"ok","name":"bot","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]}|});
+    ("assistant empty tool_calls without content rejects",
+     rejects
+       (Msg.assistant ~tool_calls:[] ())
+       "msg: assistant: content or tool_calls required");
+    ("assistant empty content with empty tool_calls rejects",
+     rejects
+       (Msg.assistant ~content:"" ~tool_calls:[] ())
+       "msg: assistant content: empty");
+    ("assistant empty tool_calls omits the member",
+     emits
+       (Msg.assistant ~content:"ok" ~tool_calls:[] ())
+       emit_msg
+       {|{"role":"assistant","content":"ok"}|});
+    ("assistant member names in frozen order with tool_calls",
+     Result.fold
+       ~ok:(fun m ->
+         Option.fold ~none:false
+           ~some:(fun members ->
+             List.map fst members
+             = [ "role"; "content"; "name"; "reasoning_content";
+                 "reasoning_details"; "thought_signature"; "tool_calls" ])
+           (J.as_obj (emit_msg m)))
+       ~error:(fun ((_ : E.t)) -> false)
+       (let* d =
+          Result.bind (J.parse {|{"type":"t"}|}) Msg.reasoning_detail_of_json
+        in
+        let* tc = mk_tc in
+        Msg.assistant ~name:"bot" ~content:"ok" ~reasoning_content:"rc"
+          ~reasoning_details:[ d ]
+          ~thought_signature:(Msg.thought_signature_of_parsed "s")
+          ~tool_calls:[ tc ] ()));
+    (* Tool_call mints and projections (M10a) *)
+    ("tool_call make canonical golden",
+     emits mk_tc Msg.Tool_call.to_json
+       {|{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}|});
+    ("tool_call make empty id rejects",
+     rejects
+       (Msg.Tool_call.make ~id:"" ~name:"f" ~arguments:"{}")
+       "msg: tool_call: id: empty");
+    ("tool_call make empty name rejects",
+     rejects
+       (Msg.Tool_call.make ~id:"c1" ~name:"" ~arguments:"{}")
+       "msg: tool_call: name: empty");
+    ("tool_call make projections",
+     Result.fold
+       ~ok:(fun tc ->
+         String.equal (Msg.Tool_call.id tc) "c1"
+         && String.equal (Msg.Tool_call.name tc) "f"
+         && String.equal (Msg.Tool_call.arguments tc) "{}")
+       ~error:(fun ((_ : E.t)) -> false)
+       mk_tc);
+    ("tool_call of_json minimal without type accepts",
+     Result.fold
+       ~ok:(fun tc ->
+         String.equal (Msg.Tool_call.id tc) "a"
+         && String.equal (Msg.Tool_call.name tc) "f"
+         && String.equal (Msg.Tool_call.arguments tc) "")
+       ~error:(fun ((_ : E.t)) -> false)
+       (tc_of {|{"id":"a","function":{"name":"f","arguments":""}}|}));
+    ("tool_call of_json verbatim passthrough",
+     emits
+       (tc_of
+          {|{"function":{"arguments":"{}","name":"f","extra":1},"custom":true,"id":"a"}|})
+       Msg.Tool_call.to_json
+       {|{"function":{"arguments":"{}","name":"f","extra":1},"custom":true,"id":"a"}|});
+    ("tool_call of_json non-object rejects",
+     rejects (tc_of {|"x"|}) "msg: tool_call: not an object");
+    ("tool_call of_json missing id rejects",
+     rejects
+       (tc_of {|{"function":{"name":"f","arguments":"{}"}}|})
+       "msg: tool_call: id: missing");
+    ("tool_call of_json non-string id rejects",
+     rejects
+       (tc_of {|{"id":1,"function":{"name":"f","arguments":"{}"}}|})
+       "msg: tool_call: id: not a string");
+    ("tool_call of_json empty id rejects",
+     rejects
+       (tc_of {|{"id":"","function":{"name":"f","arguments":"{}"}}|})
+       "msg: tool_call: id: empty");
+    ("tool_call of_json foreign type rejects",
+     rejects
+       (tc_of
+          {|{"id":"a","type":"function_call","function":{"name":"f","arguments":"{}"}}|})
+       "msg: tool_call: type: not function");
+    ("tool_call of_json non-string type rejects",
+     rejects
+       (tc_of {|{"id":"a","type":1,"function":{"name":"f","arguments":"{}"}}|})
+       "msg: tool_call: type: not function");
+    ("tool_call of_json missing function rejects",
+     rejects (tc_of {|{"id":"a"}|}) "msg: tool_call: function: missing");
+    ("tool_call of_json non-object function rejects",
+     rejects
+       (tc_of {|{"id":"a","function":"f"}|})
+       "msg: tool_call: function: not an object");
+    ("tool_call of_json missing name rejects",
+     rejects
+       (tc_of {|{"id":"a","function":{"arguments":"{}"}}|})
+       "msg: tool_call: function.name: missing");
+    ("tool_call of_json empty name rejects",
+     rejects
+       (tc_of {|{"id":"a","function":{"name":"","arguments":"{}"}}|})
+       "msg: tool_call: function.name: empty");
+    ("tool_call of_json missing arguments rejects",
+     rejects
+       (tc_of {|{"id":"a","function":{"name":"f"}}|})
+       "msg: tool_call: function.arguments: missing");
+    ("tool_call of_json object arguments rejects",
+     rejects
+       (tc_of {|{"id":"a","function":{"name":"f","arguments":{}}}|})
+       "msg: tool_call: function.arguments: not a string");
+    ("tool_call arguments_json parses",
+     emits
+       (Result.bind
+          (tc_of
+             {|{"id":"a","function":{"name":"f","arguments":"{\"x\":1}"}}|})
+          Msg.Tool_call.arguments_json)
+       Fun.id {|{"x":1}|});
+    ("tool_call arguments_json non-JSON rejects",
+     rejects
+       (Result.bind
+          (tc_of {|{"id":"a","function":{"name":"f","arguments":"nope"}}|})
+          Msg.Tool_call.arguments_json)
+       "msg: tool_call: arguments: not JSON");
     ("reasoning_detail non-object rejects",
      rejects
        (Result.bind (J.parse {|"x"|}) Msg.reasoning_detail_of_json)

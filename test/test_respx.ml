@@ -464,13 +464,13 @@ let checks : (string * bool) list =
        (doc
           (choice_with
              {|{"role":"tool","content":"42","tool_call_id":"c1"}|}))
-       "resp: choice message role");
+       "resp: choices[0].message.role: unsupported role tool");
     ("mixed array rejects the whole document",
      rejects
        (doc
           ({|[{"finish_reason":"stop","index":0,"message":|} ^ ok_msg
            ^ {|},{"finish_reason":"stop","index":1,"message":{"role":"tool","content":"42","tool_call_id":"c1"}}]|}))
-       "resp: choice message role");
+       "resp: choices[1].message.role: unsupported role tool");
     ("non-text response part rejects",
      rejects
        (doc
@@ -493,7 +493,111 @@ let checks : (string * bool) list =
           Result.bind (J.parse {|{"type":"t"}|}) Msg.reasoning_detail_of_json
         in
         Msg.assistant ~reasoning_content:"rc" ~reasoning_details:[ d ]
-          ~thought_signature:(Msg.thought_signature_of_parsed "s") ()))
+          ~thought_signature:(Msg.thought_signature_of_parsed "s") ()));
+    (* tool_calls (M10a): the document keeps items raw and verbatim,
+       the typed view validates per item with a choice-and-item path. *)
+    ("tool_calls choice happy path raw and typed",
+     on_choice
+       (doc
+          {|[{"finish_reason":"tool_calls","index":0,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{\"x\":1}"},"extra":true}]},"stop_reason":null}]|})
+       (fun c ->
+         R.Choice.content c = None
+         && R.Choice.finish c = R.Finish.Tool_calls
+         && R.Choice.stop_reason c = None
+         && (match R.Choice.tool_calls_raw c with
+            | [ J.Jobj (("id", J.Jstring "c1") :: (_ : (string * J.t) list)) ]
+              ->
+              true
+            | [] | _ :: _ -> false)
+         && Result.fold
+              ~ok:(fun calls ->
+                match calls with
+                | [ tc ] ->
+                  String.equal (Msg.Tool_call.id tc) "c1"
+                  && String.equal (Msg.Tool_call.name tc) "f"
+                  && String.equal (Msg.Tool_call.arguments tc)
+                       {|{"x":1}|}
+                | [] | _ :: _ -> false)
+              ~error:(fun ((_ : E.t)) -> false)
+              (R.Choice.tool_calls c)));
+    ("tool_calls empty array reads []",
+     on_choice
+       (doc
+          (choice_with
+             {|{"role":"assistant","content":"ok","tool_calls":[]}|}))
+       (fun c ->
+         (match R.Choice.tool_calls_raw c with
+         | [] -> true
+         | _ :: _ -> false)
+         && Result.fold
+              ~ok:(fun calls ->
+                match calls with
+                | [] -> true
+                | _ :: _ -> false)
+              ~error:(fun ((_ : E.t)) -> false)
+              (R.Choice.tool_calls c)));
+    ("tool_calls null member reads []",
+     on_choice
+       (doc
+          (choice_with
+             {|{"role":"assistant","content":"ok","tool_calls":null}|}))
+       (fun c ->
+         match R.Choice.tool_calls_raw c with
+         | [] -> true
+         | _ :: _ -> false));
+    ("tool_calls null item keeps raw and fails the typed view",
+     on_choice
+       (doc
+          (choice_with
+             {|{"role":"assistant","content":"ok","tool_calls":[null]}|}))
+       (fun c ->
+         (match R.Choice.tool_calls_raw c with
+         | [ J.Jnull ] -> true
+         | [] | _ :: _ -> false)
+         && Result.fold
+              ~ok:(fun ((_ : Msg.Tool_call.t list)) -> false)
+              ~error:(fun e ->
+                String.equal (E.to_string e)
+                  "resp: choices[0].tool_calls[0]: tool_call: not an object")
+              (R.Choice.tool_calls c)));
+    ("tool_calls malformed item parses with a typed-view error path",
+     ok_parse
+       (doc
+          ({|[{"finish_reason":"stop","index":0,"message":|} ^ ok_msg
+           ^ {|},{"finish_reason":"tool_calls","index":1,"message":{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}},{"function":{"name":"g","arguments":"{}"}}]}}]|}))
+       (fun r ->
+         match R.choices r with
+         | [ (_ : R.Choice.t); c ] ->
+           List.length (R.Choice.tool_calls_raw c) = 2
+           && Result.fold
+                ~ok:(fun ((_ : Msg.Tool_call.t list)) -> false)
+                ~error:(fun e ->
+                  String.equal (E.to_string e)
+                    "resp: choices[1].tool_calls[1]: tool_call: id: missing")
+                (R.Choice.tool_calls c)
+         | [] | [ _ ] | _ :: _ :: _ :: _ -> false));
+    ("tool_calls non-array member rejects the document",
+     rejects
+       (doc
+          (choice_with
+             {|{"role":"assistant","content":"ok","tool_calls":"c1"}|}))
+       "resp: choices[0].message.tool_calls: not an array");
+    ("empty-content tool_calls choice round-trips through the mint",
+     on_choice
+       (doc
+          (choice_with
+             {|{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"},"zeta":1}]}|}))
+       (fun c ->
+         Result.fold
+           ~ok:(fun m ->
+             String.equal
+               (J.emit (Msg.emit_message (Msg.lift m)))
+               {|{"role":"assistant","tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"},"zeta":1}]}|})
+           ~error:(fun ((_ : E.t)) -> false)
+           (Result.bind (R.Choice.tool_calls c) (fun calls ->
+                Msg.assistant
+                  ?content:(R.Choice.content c)
+                  ~tool_calls:calls ()))))
   ]
 
 let () = run checks

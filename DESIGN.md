@@ -191,7 +191,7 @@ plus a full-edge differential sweep (x402-caml conformance pattern).
 | M8 | headx: rate-limit sextet + x-ratelimit-type + Diem/USD decimal balances + Tier + typed 429/4xx/5xx + tests |
 | M9 | chat request encoder + context budget check (prompt vs availableContextTokens, max_tokens vs maxCompletionTokens, boundary tests); byte-exact golden tests vs fixtures |
 | M10 | chat response parser: choices, usage, finish_reason variants + tests;  produces the reasoning_content / reasoning_details / thought_signature values whose request-side passthrough joins `assistant` as optional arguments |
-| M10a | tools / function-calling: typed tool_calls on `assistant` and typed tool-call parsing (the swagger leaves tool_calls items untyped;  M7's `assistant` takes new optional arguments without an API break) |
+| M10a | tools / function-calling: Msgx.Tool_call (raw-verbatim repr, parser-only mint) + `assistant ?tool_calls`;  Respx raw items always parse, the typed Choice view validates with choices[i].tool_calls[j] paths;  the four request members (tools witness-gated + Tool defs, tool_choice, parallel_tool_calls standalone, response_format with a response_schema-witnessed json_schema arm);  modelx grows the response_schema phantom row + extractor;  server tools (web_search / x_search) deferred: no capability gate exists for them and their venice_parameters interaction is unpinned + tests |
 | M11 | ssex: incremental SSE state machine, bounded, data:/[DONE], CRLF and LF + delta parse + tests |
 | M12 | compile-fail harness I: domain misuses + compiling control |
 | **C: transport + effects** | |
