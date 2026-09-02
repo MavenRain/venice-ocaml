@@ -14,6 +14,7 @@ module Error : sig
     | Model_invalid of string
     | Param_invalid of string
     | Msg_invalid of string
+    | Head_invalid of string
 
   val to_string : t -> string
 end
@@ -83,6 +84,14 @@ module Json : sig
      consumes any wire number. None for Jint min_int: that magnitude
      is not representable as a non-negative mantissa. *)
   val as_dec : t -> dec option
+
+  (* Total order on canonical decimals (nonnegative mantissa below
+     10^18, scale 0..18, the shape parse mints): sign first, with a
+     zero mantissa normalized to zero whatever its scale or negative
+     flag, then magnitude on right-padded digit strings. The one
+     order in the repo; the sampling windows and the Tier derivation
+     both go through it. *)
+  val compare_dec : dec -> dec -> int
 end
 
 module Constraints : sig
@@ -438,4 +447,185 @@ module Msg : sig
 
   val nonempty : 'c t list -> ('c nonempty, Error.t) result
   (* rejects [] ONLY; video counting is out of scope for M7 *)
+end
+
+(* M8 response-header domain. The header roster (rate-limit sextet,
+   balances, x-ratelimit-type) comes from FACTS.md, not the swagger,
+   so every header fact below is a hypothesis until the M2 live
+   probes. *)
+
+module Reset_at : sig
+  (* Absolute unix timestamp from x-ratelimit-reset-requests. A
+     distinct newtype from Reset_after so the absolute and the
+     relative reset cannot swap at a use site. Minted only by
+     Head.of_pairs. *)
+  type t
+
+  val seconds : t -> int
+end
+
+module Reset_after : sig
+  (* Relative duration in seconds from x-ratelimit-reset-tokens.
+     Fractional seconds are a live hypothesis, so the value is an
+     exact unsigned decimal, not an int. Minted only by
+     Head.of_pairs. *)
+  type t
+
+  val seconds : t -> Json.dec
+end
+
+module Requests_limit : sig
+  (* The requests triple: limit + remaining are canonical nonnegative
+     counts below 10^18, and the reset is absolute. Present only when
+     all three headers arrived (all-or-nothing). *)
+  type t
+
+  val limit : t -> int
+  val remaining : t -> int
+  val reset_at : t -> Reset_at.t
+end
+
+module Tokens_limit : sig
+  (* The tokens triple; same all-or-nothing rule, relative reset. *)
+  type t
+
+  val limit : t -> int
+  val remaining : t -> int
+  val reset_after : t -> Reset_after.t
+end
+
+module Limit_type : sig
+  (* x-ratelimit-type. Swagger-undocumented (unpinned axis), so the
+     open slug precedent applies: an unfamiliar token stays usable as
+     Other with the raw token; M2 probes may tighten it. *)
+  type t =
+    | User
+    | Api_key
+    | Global
+    | Other of string
+end
+
+module Usd : sig
+  (* x-venice-balance-usd as an exact decimal. Signed: the wire is
+     represented truthfully, and overdraft is not ours to erase. A
+     distinct newtype from Diem so the balances cannot swap at a use
+     site. Minted only by Head.of_pairs. *)
+  type t
+
+  val value : t -> Json.dec
+end
+
+module Diem : sig
+  (* x-venice-balance-diem as an exact decimal, wei-precision capable
+     (up to 18 fraction digits). Minted only by Head.of_pairs. *)
+  type t
+
+  val value : t -> Json.dec
+end
+
+module Tier : sig
+  (* Derived, never a wire field: an inference rule sourced to
+     FACTS.md, not a server claim. A positive present balance is
+     evidence of Paid; zero balances are NOT evidence of Explorer
+     (the daily Diem credit can read 0 on a paid account), so
+     Explorer is never minted from headers and of_evidence returns
+     None without positive evidence. *)
+  type t =
+    | Explorer
+    | Paid
+
+  val of_evidence : usd:Usd.t option -> diem:Diem.t option -> t option
+end
+
+module Head : sig
+  (* Typed response headers and typed HTTP failures, sans-io: input
+     is the raw (name, value) pair list and the status/body strings a
+     transport hands over. of_pairs is the only mint: names match
+     ASCII-case-insensitively, values strip edge whitespace, unknown
+     names drop, and a repeated recognized name, an embedded CR/LF,
+     or a comma inside a recognized singleton value rejects
+     (smuggling- and duplicate-shaped). Each rate-limit triple is
+     all-or-nothing (a half-triple means a mangled response);
+     balances are two independent options (the x402 path documents
+     USD-only account shapes). *)
+  type t
+
+  val of_pairs : (string * string) list -> (t, Error.t) result
+  val requests : t -> Requests_limit.t option
+  val tokens : t -> Tokens_limit.t option
+  val limit_type : t -> Limit_type.t option
+  val usd : t -> Usd.t option
+  val diem : t -> Diem.t option
+
+  (* Typed error bodies, concrete so callers pattern-match. Plain
+     covers the swagger's StandardError, DetailedError,
+     ContentViolationError and PayloadTooLargeError; Payment_required
+     covers both branches of the 402 oneOf (the discovery branch
+     often has NO "error", so every member is optional);
+     Provider_policy is the provider rejection with its required
+     message + credits_refunded. details holds the PRINTED member,
+     never a raw Json.t. *)
+  type body =
+    | Plain of
+        { error : string;
+          details : string option;
+          code : string option;
+          suggested_prompt : string option }
+    | Provider_policy of
+        { message : string;
+          recommended_model : string option;
+          credits_refunded : bool }
+    | Payment_required of
+        { error : string option;
+          code : string option;
+          reason : string option;
+          current_balance_usd : Json.dec option;
+          minimum_balance_usd : Json.dec option;
+          suggested_top_up_usd : Json.dec option }
+
+  (* Every variant carries head + head_error + raw: balances on a
+     402/5xx must reach the session layer, and a mangled header block
+     never erases the status class. body is three-state: None = empty
+     raw; Some (Ok b) = parsed; Some (Error e) = present but refused,
+     raw retained verbatim. *)
+  type failure =
+    | Rate_limited of
+        { head : t option;
+          head_error : Error.t option;
+          body : (body, Error.t) result option;
+          raw : string }
+    | Client of
+        { status : int;
+          head : t option;
+          head_error : Error.t option;
+          body : (body, Error.t) result option;
+          raw : string }
+    | Server of
+        { status : int;
+          head : t option;
+          head_error : Error.t option;
+          body : (body, Error.t) result option;
+          raw : string }
+    | Unexpected_status of
+        { status : int;
+          head : t option;
+          head_error : Error.t option;
+          raw : string }
+
+  (* Parse headers ONCE via of_pairs for every response and pass the
+     result: classify demotes an Error head to head_error inside the
+     failure, so header content can never lose the status. 2xx reads
+     Ok None; 429 is Rate_limited (reset times ride the typed head);
+     other 4xx Client; 5xx Server; 1xx/3xx Unexpected_status (the API
+     does not redirect, and misclassifying 3xx as a client fault
+     would lie). The outer Error fires ONLY for a status outside
+     100..599. On a 2xx classify returns Ok None and reports no
+     header trouble: inspect your own of_pairs result there, as
+     classify surfaces a header failure only inside a failure
+     value. *)
+  val classify :
+    status:int ->
+    head:(t, Error.t) result ->
+    raw:string ->
+    (failure option, Error.t) result
 end

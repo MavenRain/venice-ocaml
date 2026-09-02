@@ -24,44 +24,11 @@ let canonical (d : Jsonx.dec) : bool =
   d.Jsonx.mantissa >= 0 && d.Jsonx.scale >= 0 && d.Jsonx.scale <= 18
   && d.Jsonx.mantissa < 1_000_000_000_000_000_000
 
-let zeros (n : int) : string = if n <= 0 then "" else String.make n '0'
-
-(* Magnitude order of two canonical decimals, total over zero: a zero
-   mantissa is the least magnitude whatever its scale, so no caller
-   ordering can misread a right-padded "0". For nonzero inputs,
-   right-pad both digit strings to a common scale; with no leading
-   zeros the longer string is the larger number, and equal lengths
-   compare byte-wise. *)
-let compare_mag (a : Jsonx.dec) (b : Jsonx.dec) : int =
-  let s = max a.Jsonx.scale b.Jsonx.scale in
-  let da = string_of_int a.Jsonx.mantissa ^ zeros (s - a.Jsonx.scale) in
-  let db = string_of_int b.Jsonx.mantissa ^ zeros (s - b.Jsonx.scale) in
-  match () with
-  | () when a.Jsonx.mantissa = 0 && b.Jsonx.mantissa = 0 -> 0
-  | () when a.Jsonx.mantissa = 0 -> -1
-  | () when b.Jsonx.mantissa = 0 -> 1
-  | () when String.length da < String.length db -> -1
-  | () when String.length da > String.length db -> 1
-  | () -> String.compare da db
-
-(* Sign with zero normalized: mantissa 0 is zero whatever the printed
-   scale or negative flag, so "-0.0" sits with 0. *)
-let sign_of (d : Jsonx.dec) : int =
-  match () with
-  | () when d.Jsonx.mantissa = 0 -> 0
-  | () when d.Jsonx.negative -> -1
-  | () -> 1
-
-(* Total order on canonical decimals. *)
+(* The canonical-decimal order lives in jsonx since M8 (public as
+   Venice.Json.compare_dec); this alias keeps the internal call
+   sites on that one definition. *)
 let compare_dec (a : Jsonx.dec) (b : Jsonx.dec) : int =
-  let sa = sign_of a in
-  let sb = sign_of b in
-  match () with
-  | () when sa < sb -> -1
-  | () when sa > sb -> 1
-  | () when sa = 0 -> 0
-  | () when sa > 0 -> compare_mag a b
-  | () -> compare_mag b a
+  Jsonx.compare_dec a b
 
 let d_zero : Jsonx.dec = { Jsonx.negative = false; mantissa = 0; scale = 0 }
 let d_one : Jsonx.dec = { Jsonx.negative = false; mantissa = 1; scale = 0 }

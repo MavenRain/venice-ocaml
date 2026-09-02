@@ -160,15 +160,15 @@ let checks : (string * bool) list =
      is_err (Venice.Repetition_penalty.make (dec 1000000000000000000 0)));
     (* compare_mag is total over zero: a zero mantissa is the least
        magnitude whatever its scale, with no caller pre-routing. *)
-    ("compare_mag zero zero", P.compare_mag (pdec 0 0) (pdec 0 3) = 0);
+    ("compare_mag zero zero", PJ.compare_mag (pdec 0 0) (pdec 0 3) = 0);
     ("compare_mag zero vs padded nonzero",
-     P.compare_mag (pdec 0 0) (pdec 5 1) = -1);
+     PJ.compare_mag (pdec 0 0) (pdec 5 1) = -1);
     ("compare_mag padded nonzero vs zero",
-     P.compare_mag (pdec 5 1) (pdec 0 0) = 1);
+     PJ.compare_mag (pdec 5 1) (pdec 0 0) = 1);
     ("compare_mag zero vs small nonzero",
-     P.compare_mag (pdec 0 2) (pdec 1 18) = -1);
+     PJ.compare_mag (pdec 0 2) (pdec 1 18) = -1);
     ("compare_mag nonzero pair unchanged",
-     P.compare_mag (pdec 15 1) (pdec 2 0) = -1);
+     PJ.compare_mag (pdec 15 1) (pdec 2 0) = -1);
     (* compare_dec stays total on hand-built canonical zeros. *)
     ("compare_dec zero pair", P.compare_dec (pdec 0 5) (pdec ~neg:true 0 0) = 0);
     ("compare_dec zero below positive",

@@ -386,3 +386,49 @@ let as_dec (v : t) : dec option =
   | Jint n -> Some { negative = n < 0; mantissa = Int.abs n; scale = 0 }
   | Jdec d -> Some d
   | Jnull | Jbool _ | Jstring _ | Jlist _ | Jobj _ -> None
+
+(* ---------- canonical-decimal order ---------- *)
+
+(* The one order on canonical decimals (nonnegative mantissa below
+   10^18, scale 0..18, the shape the number parser mints). Moved here
+   from paramsx so the repo keeps exactly one definition; public as
+   Venice.Json.compare_dec. *)
+
+let zeros (n : int) : string = if n <= 0 then "" else String.make n '0'
+
+(* Magnitude order of two canonical decimals, total over zero: a zero
+   mantissa is the least magnitude whatever its scale, so no caller
+   ordering can misread a right-padded "0". For nonzero inputs,
+   right-pad both digit strings to a common scale; with no leading
+   zeros the longer string is the larger number, and equal lengths
+   compare byte-wise. *)
+let compare_mag (a : dec) (b : dec) : int =
+  let s = max a.scale b.scale in
+  let da = string_of_int a.mantissa ^ zeros (s - a.scale) in
+  let db = string_of_int b.mantissa ^ zeros (s - b.scale) in
+  match () with
+  | () when a.mantissa = 0 && b.mantissa = 0 -> 0
+  | () when a.mantissa = 0 -> -1
+  | () when b.mantissa = 0 -> 1
+  | () when String.length da < String.length db -> -1
+  | () when String.length da > String.length db -> 1
+  | () -> String.compare da db
+
+(* Sign with zero normalized: mantissa 0 is zero whatever the printed
+   scale or negative flag, so "-0.0" sits with 0. *)
+let sign_of (d : dec) : int =
+  match () with
+  | () when d.mantissa = 0 -> 0
+  | () when d.negative -> -1
+  | () -> 1
+
+(* Total order on canonical decimals. *)
+let compare_dec (a : dec) (b : dec) : int =
+  let sa = sign_of a in
+  let sb = sign_of b in
+  match () with
+  | () when sa < sb -> -1
+  | () when sa > sb -> 1
+  | () when sa = 0 -> 0
+  | () when sa > 0 -> compare_mag a b
+  | () -> compare_mag b a

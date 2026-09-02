@@ -27,3 +27,8 @@
  (name test_msgx)
  (modules test_msgx)
  (libraries venice))
+
+(test
+ (name test_headx)
+ (modules test_headx)
+ (libraries venice))
