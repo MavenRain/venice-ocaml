@@ -13,11 +13,23 @@
    value in one of those integer members is wire-legal per the pinned
    schema and is rejected by respx alone.
 
-   Required-list tolerance (D7): logprobs is in the swagger's
-   required list, but absent-or-null parses as None. The example
-   bodies themselves show logprobs: null, OpenAI-compat servers
-   routinely omit it, and absent-vs-null is not distinguishable
-   downstream. This is the one deliberate tolerance.
+   Tolerance ledger (D7), closed; every departure from the pinned
+   schema in the tolerant direction is listed here.
+   - Required-list tolerance: logprobs is in the swagger's required
+     list, but absent-or-null parses as None. The example bodies
+     themselves show logprobs: null, OpenAI-compat servers routinely
+     omit it, and absent-vs-null is not distinguishable downstream.
+   - Null-collapse tolerances: the schema marks none of these
+     members nullable, yet a wire null reads as the member's absent
+     projection, for the same absent-vs-null reason: choices null
+     reads []; message.reasoning_details null reads [];
+     logprobs.top_logprobs null reads []; logprobs bytes null (flat
+     record and entries) reads None; cost null reads None.
+
+   Extra strictness beyond the D7 floors: logprobs bytes items are
+   narrowed to wire integers although the schema types them number,
+   so a fractional byte value rejects the whole document
+   (SDK-imposed strictness in the msgx tradition).
 
    Total, sans-io. *)
 
@@ -100,9 +112,15 @@ module Choice : sig
      variants: a string reads Some, null/absent read None, and a
      text-parts array reads Some of the parts' texts concatenated in
      received order. That concatenation is a projection, not a claim
-     the wire sent one string. reasoning_details collapses absent
-     and [] to the same [], so the parse-then-passthrough call
-     Msgx.assistant ?reasoning_details:(Some (reasoning_details c))
+     the wire sent one string. content "" and content [] are both
+     wire-legal (the schema sets no minLength or minItems): the
+     string "" projects to Some "" (the faithful reading;
+     Msgx.assistant then rejects it as empty, SDK-imposed strictness
+     until M10a's tool_calls arrives), while the empty parts array
+     projects to None (no parts, no text). reasoning_details
+     collapses absent, null and [] to the same [], so the
+     parse-then-passthrough call Msgx.assistant
+     ?reasoning_details:(Some (reasoning_details c))
      type-checks and round-trips without Error. *)
   type t
 
@@ -124,7 +142,10 @@ val of_string : string -> (t, Errx.t) result
    finish_reason/index/message present; the usage counts present,
    integers, each >= 0; created >= 0; choice index >= 0; cost
    usd/diem >= 0. Enum strings outside the closed sets reject.
-   Absent choices parses as []. *)
+   Absent choices parses as []. Besides Resp_invalid, of_string can
+   return Json_invalid (the underlying Jsonx.parse) and Msg_invalid
+   (the msgx reasoning_detail seam); each error keeps its own
+   prefix, so the failing domain stays identifiable. *)
 
 val id : t -> string
 val model : t -> string

@@ -37,10 +37,13 @@ end
 module Reasoning_detail : sig
   (* One reasoning_details item, exact by construction: the value
      wraps the raw parsed object, so re-emission preserves the member
-     set and order as received (unknown members included). Minted
-     only by the reasoning_detail_of_json seam below; no public
-     of_string exists, so a value reaching assistant from outside the
-     library can only have come from a real parsed response. *)
+     set and order as received (unknown members included). The mint
+     is the reasoning_detail_of_json seam below; the Venice entry
+     point re-exports neither the seam nor any of_string, so through
+     Venice the only source is a real parsed response. The wrapped
+     library keeps this compilation unit linkable as Venice__Msgx,
+     so "minted only by the parser" is in-library doctrine, not type
+     enforcement (D3). *)
   type t
 
   val type_ : t -> string
@@ -56,9 +59,12 @@ module Reasoning_detail : sig
 end
 
 module Thought_signature : sig
-  (* Opaque wire string ("pass it back exactly as received"). Minted
-     only by the thought_signature_of_parsed seam below; no public
-     of_string exists. *)
+  (* Opaque wire string ("pass it back exactly as received"). The
+     mint is the thought_signature_of_parsed seam below; the Venice
+     entry point exposes no of_string. The same D3 scope note as
+     Reasoning_detail applies: linkage via Venice__Msgx stays
+     possible, so the provenance claim is doctrine, not
+     enforcement. *)
   type t
 end
 

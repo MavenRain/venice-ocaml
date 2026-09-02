@@ -366,8 +366,11 @@ module Reasoning_detail : sig
   (* One reasoning_details item from a parsed chat response, exact by
      construction: the value wraps the raw parsed object, so passing
      it back through Msg.assistant re-emits the member set and order
-     exactly as received (unknown members included). Minted only by
-     the response parser; no public of_string exists. *)
+     exactly as received (unknown members included). This interface
+     exposes no of_string, so through it the value can only come
+     from a real parsed response; the wrapped library's Venice__Msgx
+     alias stays linkable underneath, so that provenance is
+     in-library doctrine, not type enforcement. *)
   type t
 
   val type_ : t -> string
@@ -384,8 +387,9 @@ end
 
 module Thought_signature : sig
   (* Opaque Gemini thought signature from a parsed chat response
-     ("pass it back exactly as received"). Minted only by the
-     response parser; no public of_string exists. *)
+     ("pass it back exactly as received"). This interface exposes no
+     of_string; the same doctrine-not-enforcement scope note as
+     Reasoning_detail applies. *)
   type t
 end
 
@@ -891,8 +895,12 @@ module Response : sig
        three variants: a string reads Some, null/absent read None,
        and a text-parts array reads Some of the parts' texts
        concatenated in received order (a projection, not a claim the
-       wire sent one string). reasoning_details collapses absent and
-       [] to the same [], so Msg.assistant
+       wire sent one string). content "" and content [] are both
+       wire-legal: the string "" projects to Some "" (the faithful
+       reading; Msg.assistant then rejects it as empty, SDK-imposed
+       strictness until M10a's tool_calls arrives), while the empty
+       parts array projects to None. reasoning_details collapses
+       absent, null and [] to the same [], so Msg.assistant
        ?reasoning_details:(Some (reasoning_details c)) round-trips
        without Error. *)
     type t
@@ -916,7 +924,11 @@ module Response : sig
      integers, each >= 0; created >= 0; choice index >= 0; cost
      usd/diem >= 0. Only cost carries a schema minimum: 0; the other
      floors are SDK-imposed strictness. Enum strings outside the
-     closed sets reject. Absent choices parses as []. *)
+     closed sets reject. Absent choices parses as []. Besides
+     Resp_invalid, of_string can return Json_invalid (the underlying
+     JSON parse) and Msg_invalid (the reasoning_detail seam); each
+     error keeps its own prefix, so the failing domain stays
+     identifiable. *)
 
   val id : t -> string
   val model : t -> string

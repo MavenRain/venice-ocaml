@@ -28,12 +28,18 @@ module Finish = struct
     | Length -> "length"
     | Tool_calls -> "tool_calls"
 
-  let of_string (s : string) : (t, Errx.t) result =
+  (* Internal (not in the .mli): the same closed set with the
+     caller's path prefixed, so choice-level failures carry
+     choices[i]. *)
+  let of_string_at (what : string) (s : string) : (t, Errx.t) result =
     match s with
     | "stop" -> Ok Stop
     | "length" -> Ok Length
     | "tool_calls" -> Ok Tool_calls
-    | other -> invalid ("finish_reason: unknown value " ^ other)
+    | other -> invalid (what ^ ": unknown value " ^ other)
+
+  let of_string (s : string) : (t, Errx.t) result =
+    of_string_at "finish_reason" s
 end
 
 module Stop_reason = struct
@@ -47,11 +53,17 @@ module Stop_reason = struct
     | Stop -> "stop"
     | Length -> "length"
 
-  let of_string (s : string) : (t, Errx.t) result =
+  (* Internal (not in the .mli): the same closed set with the
+     caller's path prefixed, so choice-level failures carry
+     choices[i]. *)
+  let of_string_at (what : string) (s : string) : (t, Errx.t) result =
     match s with
     | "stop" -> Ok Stop
     | "length" -> Ok Length
-    | other -> invalid ("stop_reason: unknown value " ^ other)
+    | other -> invalid (what ^ ": unknown value " ^ other)
+
+  let of_string (s : string) : (t, Errx.t) result =
+    of_string_at "stop_reason" s
 end
 
 module Usage = struct
@@ -211,15 +223,21 @@ let require_obj (what : string) (v : Jsonx.t) : (unit, Errx.t) result =
     ~some:(fun ((_ : (string * Jsonx.t) list)) -> Ok ())
     (Jsonx.as_obj v)
 
-(* Result traversal in list order; the first Error wins. *)
-let rec traverse (f : 'a -> ('b, Errx.t) result) (xs : 'a list) :
+(* Result traversal in list order; the first Error wins. Tail
+   recursive (the recursive call stays in tail position through
+   Result.bind): the arrays routed here are untrusted wire input, so
+   a long array must not overflow the stack. *)
+let traverse (f : 'a -> ('b, Errx.t) result) (xs : 'a list) :
     ('b list, Errx.t) result =
-  match xs with
-  | [] -> Ok []
-  | x :: rest ->
-    let* y = f x in
-    let* ys = traverse f rest in
-    Ok (y :: ys)
+  let rec go (acc : 'b list) (rest : 'a list) :
+      ('b list, Errx.t) result =
+    match rest with
+    | [] -> Ok (List.rev acc)
+    | x :: tl ->
+      let* y = f x in
+      go (y :: acc) tl
+  in
+  go [] xs
 
 (* ---------- usage ---------- *)
 
@@ -292,6 +310,11 @@ let usage_of (o : Jsonx.t option) : (Usage.t, Errx.t) result =
 
 (* ---------- logprobs ---------- *)
 
+(* bytes departures from the schema, both deliberate and recorded in
+   the .mli ledger: a wire null reads None although the schema does
+   not mark the array nullable, and each item is narrowed to a wire
+   integer although the schema types it number (a fractional byte
+   value rejects the whole document). *)
 let bytes_of (what : string) (o : Jsonx.t option) :
     (int list option, Errx.t) result =
   Option.fold ~none:(Ok None)
@@ -336,12 +359,16 @@ let logprobs_of (what : string) (o : Jsonx.t option) :
         in
         let* bytes = bytes_of (what ^ ".bytes") (Jsonx.member "bytes" v) in
         let* top =
+          (* Absent and null collapse to []. *)
           Option.fold ~none:(Ok [])
             ~some:(fun tv ->
-              Option.fold
-                ~none:(invalid (what ^ ".top_logprobs: not an array"))
-                ~some:(traverse (entry_of (what ^ ".top_logprobs")))
-                (Jsonx.as_list tv))
+              match tv with
+              | Jsonx.Jnull -> Ok []
+              | Jsonx.Jlist items ->
+                traverse (entry_of (what ^ ".top_logprobs")) items
+              | Jsonx.Jbool _ | Jsonx.Jint _ | Jsonx.Jdec _
+              | Jsonx.Jstring _ | Jsonx.Jobj _ ->
+                invalid (what ^ ".top_logprobs: not an array"))
             (Jsonx.member "top_logprobs" v)
         in
         Ok (Some { Logprobs.token; logprob; bytes; top })
@@ -367,7 +394,9 @@ let part_text (what : string) (p : Jsonx.t) : (string, Errx.t) result =
 
 (* Content variants (D8): string, null/absent, or a text-parts array
    whose texts concatenate in received order. The concatenation is a
-   projection, not a claim the wire sent one string. *)
+   projection, not a claim the wire sent one string. An EMPTY parts
+   array projects to None exactly like null: Some "" would defeat the
+   tool_calls fail-forward (callers detect no-content responses). *)
 let content_of (what : string) (m : Jsonx.t) :
     (string option, Errx.t) result =
   Option.fold ~none:(Ok None)
@@ -375,21 +404,25 @@ let content_of (what : string) (m : Jsonx.t) :
       match v with
       | Jsonx.Jnull -> Ok None
       | Jsonx.Jstring s -> Ok (Some s)
-      | Jsonx.Jlist parts ->
+      | Jsonx.Jlist [] -> Ok None
+      | Jsonx.Jlist ((_ :: _) as parts) ->
         let* texts = traverse (part_text what) parts in
         Ok (Some (String.concat "" texts))
       | Jsonx.Jbool _ | Jsonx.Jint _ | Jsonx.Jdec _ | Jsonx.Jobj _ ->
         invalid (what ^ ": not a string or parts"))
     (Jsonx.member "content" m)
 
+(* Absent, null, and [] all collapse to the same [] projection. *)
 let details_of (what : string) (o : Jsonx.t option) :
     (Msgx.Reasoning_detail.t list, Errx.t) result =
   Option.fold ~none:(Ok [])
     ~some:(fun v ->
-      Option.fold
-        ~none:(invalid (what ^ ": not an array"))
-        ~some:(traverse Msgx.reasoning_detail_of_json)
-        (Jsonx.as_list v))
+      match v with
+      | Jsonx.Jnull -> Ok []
+      | Jsonx.Jlist items -> traverse Msgx.reasoning_detail_of_json items
+      | Jsonx.Jbool _ | Jsonx.Jint _ | Jsonx.Jdec _ | Jsonx.Jstring _
+      | Jsonx.Jobj _ ->
+        invalid (what ^ ": not an array"))
     o
 
 (* M10 parses role:"assistant" choice messages only; a tool-role
@@ -405,7 +438,7 @@ let choice_of (what : string) (j : Jsonx.t) : (Choice.t, Errx.t) result =
       req_string (what ^ ".finish_reason")
         (Jsonx.member "finish_reason" j)
     in
-    Finish.of_string s
+    Finish.of_string_at (what ^ ".finish_reason") s
   in
   let* index = req_nat (what ^ ".index") (Jsonx.member "index" j) in
   let* logprobs =
@@ -447,7 +480,8 @@ let choice_of (what : string) (j : Jsonx.t) : (Choice.t, Errx.t) result =
     in
     Option.fold ~none:(Ok None)
       ~some:(fun (v : string) ->
-        Result.map Option.some (Stop_reason.of_string v))
+        Result.map Option.some
+          (Stop_reason.of_string_at (what ^ ".stop_reason") v))
       s
   in
   Ok
@@ -461,24 +495,35 @@ let choice_of (what : string) (j : Jsonx.t) : (Choice.t, Errx.t) result =
       stop_reason }
 
 (* i counts the position for error paths; the wire index member is
-   data, not the address of the fault. *)
-let rec choices_of (i : int) (items : Jsonx.t list) :
+   data, not the address of the fault. Tail recursive: the choices
+   array is untrusted wire input, so its length must not bound the
+   stack. *)
+let choices_of (i : int) (items : Jsonx.t list) :
     (Choice.t list, Errx.t) result =
-  match items with
-  | [] -> Ok []
-  | item :: rest ->
-    let* c = choice_of ("choices[" ^ string_of_int i ^ "]") item in
-    let* cs = choices_of (i + 1) rest in
-    Ok (c :: cs)
+  let rec go (i : int) (acc : Choice.t list) (rest : Jsonx.t list) :
+      (Choice.t list, Errx.t) result =
+    match rest with
+    | [] -> Ok (List.rev acc)
+    | item :: tl ->
+      let* c = choice_of ("choices[" ^ string_of_int i ^ "]") item in
+      go (i + 1) (c :: acc) tl
+  in
+  go i [] items
 
 (* ---------- cost ---------- *)
 
 let cost_of (o : Jsonx.t option) : (Cost.t option, Errx.t) result =
   Option.fold ~none:(Ok None)
     ~some:(fun v ->
-      let* usd = req_nonneg_dec "cost.usd" (Jsonx.member "usd" v) in
-      let* diem = req_nonneg_dec "cost.diem" (Jsonx.member "diem" v) in
-      Ok (Some { Cost.usd; diem }))
+      match v with
+      | Jsonx.Jnull -> Ok None
+      | Jsonx.Jobj _ ->
+        let* usd = req_nonneg_dec "cost.usd" (Jsonx.member "usd" v) in
+        let* diem = req_nonneg_dec "cost.diem" (Jsonx.member "diem" v) in
+        Ok (Some { Cost.usd; diem })
+      | Jsonx.Jbool _ | Jsonx.Jint _ | Jsonx.Jdec _ | Jsonx.Jstring _
+      | Jsonx.Jlist _ ->
+        invalid "cost: not an object")
     o
 
 (* ---------- the typed response ---------- *)
@@ -520,13 +565,16 @@ let of_string (s : string) : (t, Errx.t) result =
   in
   let* usage = usage_of (Jsonx.member "usage" j) in
   (* Absent choices parses as [] (the swagger marks the member
-     optional in so many words). *)
+     optional in so many words); wire null collapses to the same []. *)
   let* choices =
     Option.fold ~none:(Ok [])
       ~some:(fun v ->
-        Option.fold
-          ~none:(invalid "choices: not an array")
-          ~some:(choices_of 0) (Jsonx.as_list v))
+        match v with
+        | Jsonx.Jnull -> Ok []
+        | Jsonx.Jlist items -> choices_of 0 items
+        | Jsonx.Jbool _ | Jsonx.Jint _ | Jsonx.Jdec _ | Jsonx.Jstring _
+        | Jsonx.Jobj _ ->
+          invalid "choices: not an array")
       (Jsonx.member "choices" j)
   in
   let* cost = cost_of (Jsonx.member "cost" j) in

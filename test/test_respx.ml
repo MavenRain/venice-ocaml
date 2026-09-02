@@ -61,8 +61,10 @@ let no_choices : string =
   {|{"id":"i","model":"m","created":1,"object":"chat.completion","usage":|}
   ^ ok_usage ^ "}"
 
-(* The swagger example body (sky-blue), assembled from the schema's
-   own member examples. *)
+(* The swagger example body (sky-blue): the schema's own example at
+   swagger 6931-6980, all nine top-level members in the example's
+   member order, written without spaces so slices byte-match
+   Jsonx.emit output. *)
 let sky_text : string =
   "The sky appears blue because of the way Earth's atmosphere \
    scatters sunlight. When sunlight reaches Earth's atmosphere, it \
@@ -77,10 +79,14 @@ let sky_text : string =
    direct line of sight, leaving the longer wavelengths, such as \
    red, yellow, and orange, to dominate the sky's color."
 
+let vp_slice : string =
+  {|{"enable_e2ee":true,"include_venice_system_prompt":true,"include_search_results_in_stream":false,"return_search_results_as_documents":false,"web_search_citations":[],"enable_web_search":"auto","enable_web_scraping":false,"enable_web_citations":true,"strip_thinking_response":true,"disable_thinking":true,"character_slug":"venice"}|}
+
 let sky_body : string =
   {|{"choices":[{"finish_reason":"stop","index":0,"logprobs":null,"message":{"content":"|}
   ^ sky_text
-  ^ {|","reasoning_content":null,"role":"assistant","tool_calls":[]},"stop_reason":null}],"created":1677858240,"cost":{"diem":0,"usd":0.00042},"id":"chatcmpl-abc123","model":"zai-org-glm-5-1","object":"chat.completion","usage":{"completion_tokens":20,"prompt_tokens":10,"total_tokens":30}}|}
+  ^ {|","reasoning_content":null,"role":"assistant","tool_calls":[]},"stop_reason":null}],"created":1739928524,"cost":{"diem":0,"usd":0.00042},"id":"chatcmpl-a81fbc2d81a7a083bb83ccf9f44c6e5e","model":"zai-org-glm-5-1","object":"chat.completion","prompt_logprobs":null,"usage":{"completion_tokens":146,"completion_tokens_details":null,"prompt_tokens":612,"prompt_tokens_details":null,"total_tokens":758},"venice_parameters":|}
+  ^ vp_slice ^ "}"
 
 (* Reasoning body: reasoning_content + 2 reasoning_details items (the
    second with an UNKNOWN extra member) + thought_signature. The
@@ -124,10 +130,12 @@ let full_usage : string =
 
 let checks : (string * bool) list =
   [ (* happy path: the swagger example body, every projection *)
-    ("sky id", ok_parse sky_body (fun r -> String.equal (R.id r) "chatcmpl-abc123"));
+    ("sky id",
+     ok_parse sky_body (fun r ->
+         String.equal (R.id r) "chatcmpl-a81fbc2d81a7a083bb83ccf9f44c6e5e"));
     ("sky model",
      ok_parse sky_body (fun r -> String.equal (R.model r) "zai-org-glm-5-1"));
-    ("sky created", ok_parse sky_body (fun r -> R.created r = 1677858240));
+    ("sky created", ok_parse sky_body (fun r -> R.created r = 1739928524));
     ("sky one choice", ok_parse sky_body (fun r -> List.length (R.choices r) = 1));
     ("sky finish stop", on_choice sky_body (fun c -> R.Choice.finish c = R.Finish.Stop));
     ("sky index 0", on_choice sky_body (fun c -> R.Choice.index c = 0));
@@ -149,10 +157,10 @@ let checks : (string * bool) list =
     ("sky usage counts",
      ok_parse sky_body (fun r ->
          let u = R.usage r in
-         R.Usage.completion_tokens u = 20
-         && R.Usage.prompt_tokens u = 10
-         && R.Usage.total_tokens u = 30));
-    ("sky usage details none",
+         R.Usage.completion_tokens u = 146
+         && R.Usage.prompt_tokens u = 612
+         && R.Usage.total_tokens u = 758));
+    ("sky null usage details read none",
      ok_parse sky_body (fun r ->
          let u = R.usage r in
          R.Usage.reasoning_tokens u = None
@@ -165,6 +173,16 @@ let checks : (string * bool) list =
              dec_eq (R.Cost.usd c) (dec false 42 5)
              && dec_eq (R.Cost.diem c) (dec false 0 0))
            (R.cost r)));
+    ("sky prompt_logprobs_raw reads null",
+     ok_parse sky_body (fun r -> R.prompt_logprobs_raw r = Some J.Jnull));
+    ("sky venice_parameters_raw re-emits byte-for-byte",
+     ok_parse sky_body (fun r ->
+         Option.map J.emit (R.venice_parameters_raw r) = Some vp_slice));
+    ("unknown top-level member parses",
+     ok_parse
+       ({|{"id":"i","model":"m","created":1,"object":"chat.completion","unknown_top":42,"usage":|}
+        ^ ok_usage ^ "}")
+       (fun r -> String.equal (R.id r) "i"));
     (* reasoning body + passthrough round trip *)
     ("reasoning content projections",
      on_choice reasoning_body (fun c ->
@@ -250,8 +268,24 @@ let checks : (string * bool) list =
          && R.Usage.cache_creation_tokens u = Some 64));
     ("cost absent reads none",
      ok_parse no_choices (fun r -> Option.is_none (R.cost r)));
+    ("usage details absent read none",
+     ok_parse no_choices (fun r ->
+         let u = R.usage r in
+         R.Usage.reasoning_tokens u = None
+         && R.Usage.cached_tokens u = None
+         && R.Usage.cache_creation_tokens u = None));
+    ("cost null reads none",
+     ok_parse
+       ({|{"id":"i","model":"m","created":1,"object":"chat.completion","usage":|}
+        ^ ok_usage ^ {|,"cost":null}|})
+       (fun r -> Option.is_none (R.cost r)));
     ("choices absent reads []",
      ok_parse no_choices (fun r ->
+         match R.choices r with
+         | [] -> true
+         | _ :: _ -> false));
+    ("choices null reads []",
+     ok_parse (doc "null") (fun r ->
          match R.choices r with
          | [] -> true
          | _ :: _ -> false));
@@ -270,7 +304,58 @@ let checks : (string * bool) list =
           (choice_with
              {|{"role":"assistant","content":[{"type":"text","text":"a "},{"type":"text","text":"b"}]}|}))
        (fun c -> R.Choice.content c = Some "a b"));
+    ("empty parts content reads none",
+     on_choice
+       (doc (choice_with {|{"role":"assistant","content":[]}|}))
+       (fun c -> R.Choice.content c = None));
+    ("content \"\" reads Some \"\" and the assistant mint rejects it",
+     on_choice
+       (doc (choice_with {|{"role":"assistant","content":""}|}))
+       (fun c ->
+         R.Choice.content c = Some ""
+         && Result.fold
+              ~ok:(fun ((_ : Msg.msg)) -> false)
+              ~error:(fun e ->
+                String.equal (E.to_string e)
+                  "msg: assistant content: empty")
+              (Msg.assistant ?content:(R.Choice.content c) ())));
+    ("null reasoning_details reads []",
+     on_choice
+       (doc
+          (choice_with
+             {|{"role":"assistant","content":"ok","reasoning_details":null}|}))
+       (fun c ->
+         match R.Choice.reasoning_details c with
+         | [] -> true
+         | _ :: _ -> false));
+    ("null top_logprobs reads []",
+     on_choice
+       (doc
+          ({|[{"finish_reason":"stop","index":0,"logprobs":{"logprob":-0.5,"token":"h","top_logprobs":null},"message":|}
+           ^ ok_msg ^ "}]"))
+       (fun c ->
+         Option.fold ~none:false
+           ~some:(fun l ->
+             match R.Logprobs.top_logprobs l with
+             | [] -> true
+             | _ :: _ -> false)
+           (R.Choice.logprobs c)));
+    ("null bytes reads none",
+     on_choice
+       (doc
+          ({|[{"finish_reason":"stop","index":0,"logprobs":{"bytes":null,"logprob":-0.5,"token":"h"},"message":|}
+           ^ ok_msg ^ "}]"))
+       (fun c ->
+         Option.fold ~none:false
+           ~some:(fun l -> R.Logprobs.bytes l = None)
+           (R.Choice.logprobs c)));
     (* rejections, one fixture per guard *)
+    ("fractional byte rejects",
+     rejects
+       (doc
+          ({|[{"finish_reason":"stop","index":0,"logprobs":{"bytes":[1.5],"logprob":-0.5,"token":"h"},"message":|}
+           ^ ok_msg ^ "}]"))
+       "resp: choices[0].logprobs.bytes: not an integer");
     ("missing id rejects",
      rejects
        ({|{"model":"m","created":1,"object":"chat.completion","usage":|}
@@ -332,6 +417,11 @@ let checks : (string * bool) list =
        ({|{"id":"i","model":"m","created":1,"object":"chat.completion","usage":|}
         ^ ok_usage ^ {|,"cost":{"usd":-0.1,"diem":0}}|})
        "resp: cost.usd: negative");
+    ("non-object cost rejects",
+     rejects
+       ({|{"id":"i","model":"m","created":1,"object":"chat.completion","usage":|}
+        ^ ok_usage ^ {|,"cost":5}|})
+       "resp: cost: not an object");
     ("negative cost.diem rejects",
      rejects
        ({|{"id":"i","model":"m","created":1,"object":"chat.completion","usage":|}
@@ -355,13 +445,20 @@ let checks : (string * bool) list =
     ("unknown finish_reason rejects",
      rejects
        (doc ({|[{"finish_reason":"halt","index":0,"message":|} ^ ok_msg ^ "}]"))
-       "resp: finish_reason: unknown value halt");
+       "resp: choices[0].finish_reason: unknown value halt");
     ("unknown stop_reason rejects",
      rejects
        (doc
           ({|[{"finish_reason":"stop","index":0,"message":|} ^ ok_msg
            ^ {|,"stop_reason":"halt"}]|}))
-       "resp: stop_reason: unknown value halt");
+       "resp: choices[0].stop_reason: unknown value halt");
+    ("unknown stop_reason in choices[1] reports the position",
+     rejects
+       (doc
+          ({|[{"finish_reason":"stop","index":0,"message":|} ^ ok_msg
+           ^ {|},{"finish_reason":"stop","index":1,"message":|} ^ ok_msg
+           ^ {|,"stop_reason":"halt"}]|}))
+       "resp: choices[1].stop_reason: unknown value halt");
     ("tool-role choice message rejects",
      rejects
        (doc
