@@ -10,7 +10,7 @@ cd "$here"
 dunecho build
 
 # Test suites; grows one entry per milestone that lands a suite.
-suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx"
+suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex"
 # The capture sits in an if-condition so a failing suite cannot abort
 # the script (set -e) before its output and name reach the log; the
 # FAIL-text case still guards a suite that prints FAIL yet exits 0.
@@ -88,7 +88,7 @@ fi
 # (quotex + policy, M38+): the omlz subset has no functors, so the
 # Map-based codec layer is zxlint-clean but not omlz-checkable.
 # Paths relative to lib/, core module first (zxlint requirement).
-core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml"
+core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml"
 if [ -n "$core" ]; then
   files=""
   for f in $core; do files="$files $here/lib/$f"; done

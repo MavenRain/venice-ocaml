@@ -42,3 +42,8 @@
  (name test_respx)
  (modules test_respx)
  (libraries venice))
+
+(test
+ (name test_ssex)
+ (modules test_ssex)
+ (libraries venice))

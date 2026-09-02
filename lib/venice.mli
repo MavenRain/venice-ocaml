@@ -17,6 +17,8 @@ module Error : sig
     | Head_invalid of string
     | Chat_invalid of string
     | Resp_invalid of string
+    | Sse_invalid of string
+    | Chunk_invalid of string
 
   val to_string : t -> string
 end
@@ -1051,4 +1053,126 @@ module Response : sig
   val choices : t -> Choice.t list
   val usage : t -> Usage.t
   val cost : t -> Cost.t option
+end
+
+(* M11 SSE streaming. Incremental WHATWG-profile framing under the
+   Venice discipline: dispatched payloads classify as Data | Done
+   ([DONE] sentinel), any event after Done rejects, and close
+   enforces the closing policy. Strictness narrower than the WHATWG
+   spec: CRLF and LF terminate lines, a bare CR rejects, and close
+   rejects pending residues where the spec discards them; event, id
+   and retry fields are ignored (a request-scoped completion stream
+   has no reconnection machinery). Payloads are never assumed JSON
+   (E2EE streams carry hex ciphertext); Chunk parses one Data
+   payload as a chat.completion.chunk document. The whole chunk
+   shape is the OpenAI-compat hypothesis (the swagger has no chunk
+   schema), so every rejection names the failing member and the M2
+   probe corrects from the error text alone. *)
+
+module Sse : sig
+  type event =
+    | Data of string
+    | Done
+
+  type closing =
+    | Require_done
+    | Allow_eof
+
+  type t
+
+  val make :
+    ?closing:closing ->
+    ?max_line_bytes:int ->
+    ?max_event_bytes:int ->
+    unit ->
+    (t, Error.t) result
+  (* closing defaults Require_done: close before [DONE] rejects even
+     over clean framing (a mid-completion cut is detectable even
+     when the transport reports success); Allow_eof accepts a clean
+     EOF but still rejects pending residues. Byte caps default
+     1_048_576 (line) and 4_194_304 (event), each >= 1, enforced
+     during accumulation; at-cap exactly passes. *)
+
+  val feed : t -> string -> (t * event list, Error.t) result
+  (* Events in dispatch order. Errors are terminal by contract: the
+     old t is still a value, feeding it again is caller misuse.
+     Empty feed is a no-op. *)
+
+  val close : t -> (unit, Error.t) result
+  (* Every close rejection before Done carries a 200-byte prefix of
+     the last payload seen, so a truncation error can never mask the
+     server error that preceded it. *)
+
+  module Chunk : sig
+    module Delta : sig
+      (* The per-chunk delta. Cross-chunk accumulation of tool-call
+         fragments into Tool_call.t is deferred to M14; M11 ships
+         the per-chunk view only. *)
+
+      type fragment
+
+      val fragment_index : fragment -> int
+      val fragment_id : fragment -> string option
+      val fragment_name : fragment -> string option
+      val fragment_arguments : fragment -> string option
+      val fragment_raw : fragment -> Json.t
+
+      type t
+
+      val role : t -> string option
+      (* verbatim string, NO enum: wholly unpinned member *)
+
+      val content : t -> string option
+      (* absent-or-null reads None; content "" stays Some "" *)
+
+      val reasoning_content : t -> string option
+
+      val tool_calls_raw : t -> Json.t list
+      (* items verbatim; absent or null reads [], and the document
+         parse never inspects an item *)
+
+      val tool_call_fragments : t -> (fragment list, Error.t) result
+      (* the typed view: the first failing item wins and carries its
+         choices[i].delta.tool_calls[j] path *)
+    end
+
+    module Choice : sig
+      (* index required >= 0; delta absent-or-null reads the empty
+         delta. finish_reason / stop_reason are held raw (absent or
+         null reads None, a foreign value never rejects the
+         document) with typed views over the Response closed enums
+         that fail loudly with their choices[i] paths: the terminal
+         chunk must not lose its end-of-turn signal to an unpinned
+         enum. *)
+      type t
+
+      val index : t -> int
+      val delta : t -> Delta.t
+      val finish_reason_raw : t -> Json.t option
+      val stop_reason_raw : t -> Json.t option
+      val finish : t -> (Response.Finish.t option, Error.t) result
+
+      val stop_reason :
+        t -> (Response.Stop_reason.t option, Error.t) result
+    end
+
+    type t
+
+    val of_string : string -> (t, Error.t) result
+    (* Enforced floor (hypothesis, no schema): object present and
+       equal to "chat.completion.chunk"; id, model, created present;
+       created >= 0. choices absent or null reads [] (a usage-only
+       final chunk has choices []). usage optional, parsed by the
+       ONE usage grammar shared with Response, re-domained to the
+       chunk prefix. A top-level error member returns the "server
+       error: " channel with a bounded payload render. Besides
+       Chunk_invalid, of_string can return Json_invalid (the
+       underlying JSON parse); each error keeps its own prefix. *)
+
+    val id : t -> string
+    val model : t -> string
+    val created : t -> int
+    val choices : t -> Choice.t list
+    val usage_opt : t -> Response.Usage.t option
+  end
 end

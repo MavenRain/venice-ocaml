@@ -117,8 +117,8 @@ module Session : sig
 end
 
 module Stream : sig
-  type _ Effect.t += Delta : Delta.t -> unit Effect.t   (* host layer *)
-  val run : (unit -> 'a) -> on_delta:(Delta.t -> unit) -> 'a
+  type _ Effect.t += Delta : Sse.Chunk.Delta.t -> unit Effect.t   (* host layer *)
+  val run : (unit -> 'a) -> on_delta:(Sse.Chunk.Delta.t -> unit) -> 'a
 end
 ```
 
@@ -181,7 +181,7 @@ plus a full-edge differential sweep (x402-caml conformance pattern).
 |---|---|
 | **A: foundation** | |
 | M1 | scaffold: dune-project, opam, licenses, gates.sh, ZXCAML.md, DESIGN.md, FACTS.md |
-| M2 | live probe I: models list + headers + one SSE stream recorded to fixtures/ (redacted), plus one request-body capture per M9 chat golden starting with fixtures/chat_minimal.json (activates the skipped test_chatx fixture check); FACTS pins or corrections |
+| M2 | live probe I: models list + headers + one SSE stream recorded to fixtures/ (redacted;  pins the M11 chunk-shape hypothesis: delta members, usage placement, chunk finish_reason values, whether a chat stream always ends with [DONE], and the M10a O2 debt: a streamed finish_reason + stop_reason pair from a tool-call turn), plus one request-body capture per M9 chat golden starting with fixtures/chat_minimal.json (activates the skipped test_chatx fixture check); FACTS pins or corrections |
 | M3 | errx + bytesx (total cursor readers: u8/u16le/u32le/u64le/take at offset) + hexx strict + b64x (strict std base64 AND base64url) + tests |
 | M4 | jsonx port + scaled-decimal extension + tests |
 | **B: domain model** | |
@@ -196,7 +196,7 @@ plus a full-edge differential sweep (x402-caml conformance pattern).
 | M12 | compile-fail harness I: domain misuses + compiling control |
 | **C: transport + effects** | |
 | M13 | transport boundary: sans-io Request/Response, curl-subprocess host transport, API-key redaction, fake transport + tests |
-| M14 | streamx: effect Delta, handlers (run/iter/fold), direct-style demo, scripted-transport determinism tests |
+| M14 | streamx: effect Delta, handlers (run/iter/fold), direct-style demo, scripted-transport determinism tests;  cross-chunk accumulation of the M11 ssex tool_call fragments into Msgx.Tool_call (M11 ships the per-chunk fragment view only) |
 | M15 | clientx: chat, chat_stream, models; bounded typed retry/backoff honoring reset headers; fake-transport e2e + tests |
 | **D: crypto tower (core subset)** | |
 | M16 | limbsx port + modexp + tests |

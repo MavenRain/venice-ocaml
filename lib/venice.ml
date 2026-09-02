@@ -38,3 +38,4 @@ module Cache_retention = Chatx.Cache_retention
 module Tool = Chatx.Tool
 module Chat = Chatx
 module Response = Respx
+module Sse = Ssex

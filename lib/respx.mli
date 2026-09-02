@@ -178,3 +178,15 @@ val cost : t -> Cost.t option
 
 val venice_parameters_raw : t -> Jsonx.t option
 val prompt_logprobs_raw : t -> Jsonx.t option
+
+val usage_of_json_x :
+  wrap:(string -> Errx.t) ->
+  path:string ->
+  Jsonx.t ->
+  (Usage.t, Errx.t) result
+(* Internal seam (M11 A8); venice.mli does not re-export it. The ONE
+   usage grammar applied to a pre-parsed member value; errors are
+   re-domained through wrap as wrap (path ^ ": " ^ detail), the detail
+   stripped of its "resp: " prefix, so the streaming chunk reading
+   reports chunk-domain errors while the two usage readings cannot
+   drift. *)

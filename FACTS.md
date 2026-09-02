@@ -184,6 +184,26 @@ live probe confirms it (M2 pins the probe fixtures). Re-verify on SDK bumps.
   65-byte ephemeral pubkey || 12-byte GCM nonce || 16-byte tag || ct
   (tag position vs ct: pin exact layout from the live E2EE capture at M31).
 
+## Streaming (SSE)
+- /chat/completions 200 declares application/json only (swagger
+  6432-6452);  the file has no text/event-stream, no chunk schema, zero
+  `delta` members;  the only streaming prose is 1504-1509, 1522-1527
+  and 2377.
+- Framing: WHATWG event-stream profile, `data:` fields only.
+  Divergences: bare CR terminators reject (the spec accepts CR);
+  `event:`/`id:`/`retry:` fields are read and ignored (no dispatch
+  types, no reconnect);  EOF with pending bytes rejects instead of the
+  spec's silent discard.
+- Termination convention: a literal `data: [DONE]` event ends a chat
+  stream (OpenAI convention;  not in the swagger file).
+- Deferred to M14: cross-chunk accumulation of the M11 ssex tool_call
+  fragments into Msgx.Tool_call;  M11 ships the per-chunk fragment
+  view only.
+- OPEN FACTS (pin at the M2 probe): chunk schema unpinned (the
+  OpenAI-compat shape is a hypothesis);  usage placement (per-chunk vs
+  a usage-only final chunk);  whether E2EE streams end with [DONE];
+  first-chunk search-results member shape;  chunk finish_reason values.
+
 ## Sources
 - https://docs.venice.ai/api-reference/api-spec
 - https://docs.venice.ai/guides/features/tee-e2ee-models

@@ -164,13 +164,19 @@ module Choice = struct
      opt-in, and a foreign-shaped item must not reject a whole
      response whose other members are fine. The first failing item
      wins and the error carries its choices[i].tool_calls[j] path;
-     the msgx mint's own detail is kept, reprefixed Resp_invalid. *)
+     the msgx mint's own detail is kept, reprefixed Resp_invalid.
+     Same-grammar details strip their domain prefix (Msg_invalid from
+     the mint here; Resp_invalid from usage_of through the M11
+     usage_of_json_x seam, which re-domains them, so "resp: " never
+     leaks into a chunk error text); foreign domains keep their
+     prefix so the failing domain stays identifiable. *)
   let item_detail (e : Errx.t) : string =
     match e with
     | Errx.Msg_invalid s -> s
+    | Errx.Resp_invalid s -> s
     | Errx.Hex_invalid _ | Errx.B64_invalid _ | Errx.Json_invalid _
     | Errx.Model_invalid _ | Errx.Param_invalid _ | Errx.Head_invalid _
-    | Errx.Chat_invalid _ | Errx.Resp_invalid _ ->
+    | Errx.Chat_invalid _ | Errx.Sse_invalid _ | Errx.Chunk_invalid _ ->
       Errx.to_string e
 
   let tool_calls (c : t) : (Msgx.Tool_call.t list, Errx.t) result =
@@ -644,3 +650,14 @@ let of_string (s : string) : (t, Errx.t) result =
       cost;
       venice_parameters_raw = Jsonx.member "venice_parameters" j;
       prompt_logprobs_raw = Jsonx.member "prompt_logprobs" j }
+
+(* The usage seam (M11 A8): the ONE usage grammar applied to a
+   pre-parsed member value, re-domained through wrap so the streaming
+   chunk reading reports its own domain instead of "resp: ".
+   Implemented over the existing usage_of + Choice.item_detail, so the
+   streaming and non-streaming usage readings cannot drift. *)
+let usage_of_json_x ~(wrap : string -> Errx.t) ~(path : string)
+    (v : Jsonx.t) : (Usage.t, Errx.t) result =
+  Result.map_error
+    (fun (e : Errx.t) -> wrap (path ^ ": " ^ Choice.item_detail e))
+    (usage_of (Some v))
