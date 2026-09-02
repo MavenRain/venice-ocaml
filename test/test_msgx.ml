@@ -260,6 +260,66 @@ let checks : (string * bool) list =
     ("assistant empty content rejects",
      rejects (Msg.assistant ~content:"" ())
        "msg: assistant content: empty");
+    ("assistant reasoning members emit in the frozen order",
+     emits
+       (let* d =
+          Result.bind
+            (J.parse {|{"type":"reasoning.text","text":"t1"}|})
+            Msg.reasoning_detail_of_json
+        in
+        Msg.assistant ~name:"bot" ~content:"ok" ~reasoning_content:"rc"
+          ~reasoning_details:[ d ]
+          ~thought_signature:(Msg.thought_signature_of_parsed "sig") ())
+       emit_msg
+       {|{"role":"assistant","content":"ok","name":"bot","reasoning_content":"rc","reasoning_details":[{"type":"reasoning.text","text":"t1"}],"thought_signature":"sig"}|});
+    ("assistant member names in frozen order",
+     Result.fold
+       ~ok:(fun m ->
+         Option.fold ~none:false
+           ~some:(fun members ->
+             List.map fst members
+             = [ "role"; "content"; "name"; "reasoning_content";
+                 "reasoning_details"; "thought_signature" ])
+           (J.as_obj (emit_msg m)))
+       ~error:(fun ((_ : E.t)) -> false)
+       (let* d =
+          Result.bind
+            (J.parse {|{"type":"t"}|})
+            Msg.reasoning_detail_of_json
+        in
+        Msg.assistant ~name:"bot" ~content:"ok" ~reasoning_content:"rc"
+          ~reasoning_details:[ d ]
+          ~thought_signature:(Msg.thought_signature_of_parsed "s") ()));
+    ("assistant empty reasoning_details omits the member",
+     emits
+       (Msg.assistant ~content:"ok" ~reasoning_details:[] ())
+       emit_msg
+       {|{"role":"assistant","content":"ok"}|});
+    ("assistant reasoning members without content rejects",
+     rejects
+       (Msg.assistant ~reasoning_content:"rc" ())
+       "msg: assistant: content or tool_calls required");
+    ("reasoning_detail non-object rejects",
+     rejects
+       (Result.bind (J.parse {|"x"|}) Msg.reasoning_detail_of_json)
+       "msg: reasoning_detail: not an object");
+    ("reasoning_detail missing type rejects",
+     rejects
+       (Result.bind (J.parse {|{"text":"t"}|}) Msg.reasoning_detail_of_json)
+       "msg: reasoning_detail: type: missing");
+    ("reasoning_detail non-string type rejects",
+     rejects
+       (Result.bind (J.parse {|{"type":1}|}) Msg.reasoning_detail_of_json)
+       "msg: reasoning_detail: type: not a string");
+    ("reasoning_detail projections",
+     Result.fold
+       ~ok:(fun d ->
+         String.equal (Msg.Reasoning_detail.type_ d) "reasoning.text"
+         && Msg.Reasoning_detail.text d = None)
+       ~error:(fun ((_ : E.t)) -> false)
+       (Result.bind
+          (J.parse {|{"type":"reasoning.text"}|})
+          Msg.reasoning_detail_of_json));
     ("tool content always bare string",
      emits (Msg.tool ~tool_call_id:"call_1" "42") emit_msg
        {|{"role":"tool","content":"42","tool_call_id":"call_1"}|});

@@ -37,3 +37,8 @@
  (name test_chatx)
  (modules test_chatx)
  (libraries venice))
+
+(test
+ (name test_respx)
+ (modules test_respx)
+ (libraries venice))

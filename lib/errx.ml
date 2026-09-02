@@ -2,7 +2,8 @@
    caller and the harness can pin the exact reason. Grows with the
    milestones; M3 seeds the codec constructors, M4 adds JSON, M5 the
    model domain, M6 the sampling parameters, M7 the message domain,
-   M8 the response-header domain, M9 the chat request domain. *)
+   M8 the response-header domain, M9 the chat request domain, M10 the
+   chat response domain. *)
 
 type t =
   | Hex_invalid of string
@@ -13,6 +14,7 @@ type t =
   | Msg_invalid of string
   | Head_invalid of string
   | Chat_invalid of string
+  | Resp_invalid of string
 
 let to_string (e : t) : string =
   match e with
@@ -24,3 +26,4 @@ let to_string (e : t) : string =
   | Msg_invalid s -> "msg: " ^ s
   | Head_invalid s -> "head: " ^ s
   | Chat_invalid s -> "chat: " ^ s
+  | Resp_invalid s -> "resp: " ^ s

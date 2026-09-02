@@ -10,13 +10,21 @@ cd "$here"
 dunecho build
 
 # Test suites; grows one entry per milestone that lands a suite.
-suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx"
+suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx"
+# The capture sits in an if-condition so a failing suite cannot abort
+# the script (set -e) before its output and name reach the log; the
+# FAIL-text case still guards a suite that prints FAIL yet exits 0.
 for t in $suites; do
-  out="$("$here/_build/default/test/$t.exe")"
-  echo "$t: $out"
-  case "$out" in
-    *FAIL*) echo "gate: $t failed"; exit 1 ;;
-  esac
+  if out="$("$here/_build/default/test/$t.exe")"; then
+    echo "$t: $out"
+    case "$out" in
+      *FAIL*) echo "gate: $t failed"; exit 1 ;;
+    esac
+  else
+    echo "$t: $out"
+    echo "gate: $t failed"
+    exit 1
+  fi
 done
 
 # M7 compile-fail battery: every case must fail against the built
@@ -78,7 +86,7 @@ fi
 # (quotex + policy, M38+): the omlz subset has no functors, so the
 # Map-based codec layer is zxlint-clean but not omlz-checkable.
 # Paths relative to lib/, core module first (zxlint requirement).
-core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml"
+core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml"
 if [ -n "$core" ]; then
   files=""
   for f in $core; do files="$files $here/lib/$f"; done

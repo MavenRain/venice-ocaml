@@ -1,0 +1,541 @@
+(* M10 chat response domain, sans-io: input is the 200-response body
+   bytes a transport hands over. The shape comes from the swagger
+   chat.completion schema; the response object never sets
+   additionalProperties: false, so unknown members are tolerated
+   everywhere. Required members are enforced strictly (D7), the
+   reasoning passthrough values are minted through the msgx seam so
+   the parse output feeds Msgx.assistant directly (D2/D3), and a
+   tool-role choice message rejects the whole document (D8; tool_calls
+   typing is M10a). Response forgery stays a transport threat: M33
+   consumes raw completion bytes at the transport, not this parser's
+   output. Total, sans-io. *)
+
+let ( let* ) = Result.bind
+
+let invalid (msg : string) : ('a, Errx.t) result =
+  Error (Errx.Resp_invalid msg)
+
+module Finish = struct
+  (* finish_reason wire enum, closed; a foreign string rejects. *)
+  type t =
+    | Stop
+    | Length
+    | Tool_calls
+
+  let to_string (f : t) : string =
+    match f with
+    | Stop -> "stop"
+    | Length -> "length"
+    | Tool_calls -> "tool_calls"
+
+  let of_string (s : string) : (t, Errx.t) result =
+    match s with
+    | "stop" -> Ok Stop
+    | "length" -> Ok Length
+    | "tool_calls" -> Ok Tool_calls
+    | other -> invalid ("finish_reason: unknown value " ^ other)
+end
+
+module Stop_reason = struct
+  (* stop_reason wire enum, closed; the member itself is nullable. *)
+  type t =
+    | Stop
+    | Length
+
+  let to_string (r : t) : string =
+    match r with
+    | Stop -> "stop"
+    | Length -> "length"
+
+  let of_string (s : string) : (t, Errx.t) result =
+    match s with
+    | "stop" -> Ok Stop
+    | "length" -> Ok Length
+    | other -> invalid ("stop_reason: unknown value " ^ other)
+end
+
+module Usage = struct
+  (* The three counts are required wire integers; the two details
+     objects are nullable and their members optional, so those
+     project as options (D9). No cross-field arithmetic check:
+     prompt + completion vs total is server-owned. *)
+  type t =
+    { completion_tokens : int;
+      prompt_tokens : int;
+      total_tokens : int;
+      reasoning_tokens : int option;
+      cached_tokens : int option;
+      cache_creation_tokens : int option }
+
+  let completion_tokens (u : t) : int = u.completion_tokens
+  let prompt_tokens (u : t) : int = u.prompt_tokens
+  let total_tokens (u : t) : int = u.total_tokens
+  let reasoning_tokens (u : t) : int option = u.reasoning_tokens
+  let cached_tokens (u : t) : int option = u.cached_tokens
+
+  let cache_creation_tokens (u : t) : int option =
+    u.cache_creation_tokens
+end
+
+module Logprobs = struct
+  (* The swagger gives ONE flat token record plus top_logprobs, not
+     OpenAI's content array. logprob is a wire number, held exact as
+     a decimal; bytes stays an optional int list. *)
+  type entry =
+    { e_token : string;
+      e_logprob : Jsonx.dec;
+      e_bytes : int list option }
+
+  type t =
+    { token : string;
+      logprob : Jsonx.dec;
+      bytes : int list option;
+      top : entry list }
+
+  let entry_token (e : entry) : string = e.e_token
+  let entry_logprob (e : entry) : Jsonx.dec = e.e_logprob
+  let entry_bytes (e : entry) : int list option = e.e_bytes
+  let token (l : t) : string = l.token
+  let logprob (l : t) : Jsonx.dec = l.logprob
+  let bytes (l : t) : int list option = l.bytes
+  let top_logprobs (l : t) : entry list = l.top
+end
+
+module Cost = struct
+  (* Both members are required when the (optional) cost object is
+     present; both carry the schema's only minimum: 0 keywords. *)
+  type t =
+    { usd : Jsonx.dec;
+      diem : Jsonx.dec }
+
+  let usd (c : t) : Jsonx.dec = c.usd
+  let diem (c : t) : Jsonx.dec = c.diem
+end
+
+module Choice = struct
+  (* One parsed assistant choice. reasoning_details collapses absent
+     and [] to the same [] (D4), so the projection feeds
+     Msgx.assistant's ?reasoning_details label directly. *)
+  type t =
+    { finish : Finish.t;
+      index : int;
+      content : string option;
+      reasoning_content : string option;
+      reasoning_details : Msgx.Reasoning_detail.t list;
+      thought_signature : Msgx.Thought_signature.t option;
+      logprobs : Logprobs.t option;
+      stop_reason : Stop_reason.t option }
+
+  let finish (c : t) : Finish.t = c.finish
+  let index (c : t) : int = c.index
+  let content (c : t) : string option = c.content
+  let reasoning_content (c : t) : string option = c.reasoning_content
+
+  let reasoning_details (c : t) : Msgx.Reasoning_detail.t list =
+    c.reasoning_details
+
+  let thought_signature (c : t) : Msgx.Thought_signature.t option =
+    c.thought_signature
+
+  let logprobs (c : t) : Logprobs.t option = c.logprobs
+  let stop_reason (c : t) : Stop_reason.t option = c.stop_reason
+end
+
+(* ---------- member helpers ---------- *)
+
+let req_string (what : string) (o : Jsonx.t option) :
+    (string, Errx.t) result =
+  Option.fold
+    ~none:(invalid (what ^ ": missing"))
+    ~some:(fun v ->
+      Option.fold
+        ~none:(invalid (what ^ ": not a string"))
+        ~some:Result.ok (Jsonx.as_string v))
+    o
+
+(* Wire integer (Jint only; a Jdec token count rejects) with the >= 0
+   floor. The floor is SDK-imposed strictness for every member routed
+   here except cost (see the .mli provenance note). *)
+let nat_of (what : string) (v : Jsonx.t) : (int, Errx.t) result =
+  Option.fold
+    ~none:(invalid (what ^ ": not an integer"))
+    ~some:(fun (n : int) ->
+      if n < 0 then invalid (what ^ ": negative") else Ok n)
+    (Jsonx.as_int v)
+
+let req_nat (what : string) (o : Jsonx.t option) : (int, Errx.t) result =
+  Option.fold ~none:(invalid (what ^ ": missing")) ~some:(nat_of what) o
+
+let opt_nat (what : string) (o : Jsonx.t option) :
+    (int option, Errx.t) result =
+  Option.fold ~none:(Ok None)
+    ~some:(fun v -> Result.map Option.some (nat_of what v))
+    o
+
+let req_dec (what : string) (o : Jsonx.t option) :
+    (Jsonx.dec, Errx.t) result =
+  Option.fold
+    ~none:(invalid (what ^ ": missing"))
+    ~some:(fun v ->
+      Option.fold
+        ~none:(invalid (what ^ ": not a number"))
+        ~some:Result.ok (Jsonx.as_dec v))
+    o
+
+let req_nonneg_dec (what : string) (o : Jsonx.t option) :
+    (Jsonx.dec, Errx.t) result =
+  let dec_zero : Jsonx.dec =
+    { Jsonx.negative = false; mantissa = 0; scale = 0 }
+  in
+  let* d = req_dec what o in
+  if Jsonx.compare_dec d dec_zero < 0 then invalid (what ^ ": negative")
+  else Ok d
+
+(* Absent and null collapse to None; a present value must be a
+   string. *)
+let opt_string (what : string) (o : Jsonx.t option) :
+    (string option, Errx.t) result =
+  Option.fold ~none:(Ok None)
+    ~some:(fun v ->
+      match v with
+      | Jsonx.Jnull -> Ok None
+      | Jsonx.Jstring s -> Ok (Some s)
+      | Jsonx.Jbool _ | Jsonx.Jint _ | Jsonx.Jdec _ | Jsonx.Jlist _
+      | Jsonx.Jobj _ ->
+        invalid (what ^ ": not a string"))
+    o
+
+let require_obj (what : string) (v : Jsonx.t) : (unit, Errx.t) result =
+  Option.fold
+    ~none:(invalid (what ^ ": not an object"))
+    ~some:(fun ((_ : (string * Jsonx.t) list)) -> Ok ())
+    (Jsonx.as_obj v)
+
+(* Result traversal in list order; the first Error wins. *)
+let rec traverse (f : 'a -> ('b, Errx.t) result) (xs : 'a list) :
+    ('b list, Errx.t) result =
+  match xs with
+  | [] -> Ok []
+  | x :: rest ->
+    let* y = f x in
+    let* ys = traverse f rest in
+    Ok (y :: ys)
+
+(* ---------- usage ---------- *)
+
+let completion_details_of (o : Jsonx.t option) :
+    (int option, Errx.t) result =
+  Option.fold ~none:(Ok None)
+    ~some:(fun v ->
+      match v with
+      | Jsonx.Jnull -> Ok None
+      | Jsonx.Jobj _ ->
+        opt_nat "usage.completion_tokens_details.reasoning_tokens"
+          (Jsonx.member "reasoning_tokens" v)
+      | Jsonx.Jbool _ | Jsonx.Jint _ | Jsonx.Jdec _ | Jsonx.Jstring _
+      | Jsonx.Jlist _ ->
+        invalid "usage.completion_tokens_details: not an object")
+    o
+
+let prompt_details_of (o : Jsonx.t option) :
+    (int option * int option, Errx.t) result =
+  Option.fold
+    ~none:(Ok (None, None))
+    ~some:(fun v ->
+      match v with
+      | Jsonx.Jnull -> Ok (None, None)
+      | Jsonx.Jobj _ ->
+        let* cached =
+          opt_nat "usage.prompt_tokens_details.cached_tokens"
+            (Jsonx.member "cached_tokens" v)
+        in
+        let* creation =
+          opt_nat
+            "usage.prompt_tokens_details.cache_creation_input_tokens"
+            (Jsonx.member "cache_creation_input_tokens" v)
+        in
+        Ok (cached, creation)
+      | Jsonx.Jbool _ | Jsonx.Jint _ | Jsonx.Jdec _ | Jsonx.Jstring _
+      | Jsonx.Jlist _ ->
+        invalid "usage.prompt_tokens_details: not an object")
+    o
+
+let usage_of (o : Jsonx.t option) : (Usage.t, Errx.t) result =
+  Option.fold
+    ~none:(invalid "usage: missing")
+    ~some:(fun v ->
+      let* (() : unit) = require_obj "usage" v in
+      let* completion =
+        req_nat "usage.completion_tokens"
+          (Jsonx.member "completion_tokens" v)
+      in
+      let* prompt =
+        req_nat "usage.prompt_tokens" (Jsonx.member "prompt_tokens" v)
+      in
+      let* total =
+        req_nat "usage.total_tokens" (Jsonx.member "total_tokens" v)
+      in
+      let* reasoning =
+        completion_details_of (Jsonx.member "completion_tokens_details" v)
+      in
+      let* cached, creation =
+        prompt_details_of (Jsonx.member "prompt_tokens_details" v)
+      in
+      Ok
+        { Usage.completion_tokens = completion;
+          prompt_tokens = prompt;
+          total_tokens = total;
+          reasoning_tokens = reasoning;
+          cached_tokens = cached;
+          cache_creation_tokens = creation })
+    o
+
+(* ---------- logprobs ---------- *)
+
+let bytes_of (what : string) (o : Jsonx.t option) :
+    (int list option, Errx.t) result =
+  Option.fold ~none:(Ok None)
+    ~some:(fun v ->
+      match v with
+      | Jsonx.Jnull -> Ok None
+      | Jsonx.Jlist items ->
+        Result.map Option.some
+          (traverse
+             (fun b ->
+               Option.fold
+                 ~none:(invalid (what ^ ": not an integer"))
+                 ~some:Result.ok (Jsonx.as_int b))
+             items)
+      | Jsonx.Jbool _ | Jsonx.Jint _ | Jsonx.Jdec _ | Jsonx.Jstring _
+      | Jsonx.Jobj _ ->
+        invalid (what ^ ": not an array"))
+    o
+
+let entry_of (what : string) (j : Jsonx.t) :
+    (Logprobs.entry, Errx.t) result =
+  let* token = req_string (what ^ ".token") (Jsonx.member "token" j) in
+  let* logprob = req_dec (what ^ ".logprob") (Jsonx.member "logprob" j) in
+  let* bytes = bytes_of (what ^ ".bytes") (Jsonx.member "bytes" j) in
+  Ok { Logprobs.e_token = token; e_logprob = logprob; e_bytes = bytes }
+
+(* The swagger lists logprobs in each choice's required list, but the
+   parser accepts absent-or-null as None: the example bodies
+   themselves show logprobs: null, OpenAI-compat servers routinely
+   omit it, and absent-vs-null is not distinguishable downstream.
+   The one deliberate required-list tolerance (D7). *)
+let logprobs_of (what : string) (o : Jsonx.t option) :
+    (Logprobs.t option, Errx.t) result =
+  Option.fold ~none:(Ok None)
+    ~some:(fun v ->
+      match v with
+      | Jsonx.Jnull -> Ok None
+      | Jsonx.Jobj _ ->
+        let* token = req_string (what ^ ".token") (Jsonx.member "token" v) in
+        let* logprob =
+          req_dec (what ^ ".logprob") (Jsonx.member "logprob" v)
+        in
+        let* bytes = bytes_of (what ^ ".bytes") (Jsonx.member "bytes" v) in
+        let* top =
+          Option.fold ~none:(Ok [])
+            ~some:(fun tv ->
+              Option.fold
+                ~none:(invalid (what ^ ".top_logprobs: not an array"))
+                ~some:(traverse (entry_of (what ^ ".top_logprobs")))
+                (Jsonx.as_list tv))
+            (Jsonx.member "top_logprobs" v)
+        in
+        Ok (Some { Logprobs.token; logprob; bytes; top })
+      | Jsonx.Jbool _ | Jsonx.Jint _ | Jsonx.Jdec _ | Jsonx.Jstring _
+      | Jsonx.Jlist _ ->
+        invalid (what ^ ": not an object"))
+    o
+
+(* ---------- choice message ---------- *)
+
+(* One text part: type must equal "text" (a non-text part type
+   rejects; D8), and the schema requires text. *)
+let part_text (what : string) (p : Jsonx.t) : (string, Errx.t) result =
+  let ty = Option.bind (Jsonx.member "type" p) Jsonx.as_string in
+  let text = Option.bind (Jsonx.member "text" p) Jsonx.as_string in
+  match () with
+  | () when not (Option.fold ~none:false ~some:(String.equal "text") ty) ->
+    invalid (what ^ ": non-text part")
+  | () ->
+    Option.fold
+      ~none:(invalid (what ^ ": text part without text"))
+      ~some:Result.ok text
+
+(* Content variants (D8): string, null/absent, or a text-parts array
+   whose texts concatenate in received order. The concatenation is a
+   projection, not a claim the wire sent one string. *)
+let content_of (what : string) (m : Jsonx.t) :
+    (string option, Errx.t) result =
+  Option.fold ~none:(Ok None)
+    ~some:(fun v ->
+      match v with
+      | Jsonx.Jnull -> Ok None
+      | Jsonx.Jstring s -> Ok (Some s)
+      | Jsonx.Jlist parts ->
+        let* texts = traverse (part_text what) parts in
+        Ok (Some (String.concat "" texts))
+      | Jsonx.Jbool _ | Jsonx.Jint _ | Jsonx.Jdec _ | Jsonx.Jobj _ ->
+        invalid (what ^ ": not a string or parts"))
+    (Jsonx.member "content" m)
+
+let details_of (what : string) (o : Jsonx.t option) :
+    (Msgx.Reasoning_detail.t list, Errx.t) result =
+  Option.fold ~none:(Ok [])
+    ~some:(fun v ->
+      Option.fold
+        ~none:(invalid (what ^ ": not an array"))
+        ~some:(traverse Msgx.reasoning_detail_of_json)
+        (Jsonx.as_list v))
+    o
+
+(* M10 parses role:"assistant" choice messages only; a tool-role
+   message (the anyOf second branch) rejects the WHOLE document (D8:
+   all-or-nothing, so discarding the id/usage/cost of a mixed array
+   is impossible by construction). tool_calls in the message is
+   ignored, not an error, and finish_reason tool_calls still parses
+   so callers can detect and fail forward until M10a. *)
+let choice_of (what : string) (j : Jsonx.t) : (Choice.t, Errx.t) result =
+  let* (() : unit) = require_obj what j in
+  let* finish =
+    let* s =
+      req_string (what ^ ".finish_reason")
+        (Jsonx.member "finish_reason" j)
+    in
+    Finish.of_string s
+  in
+  let* index = req_nat (what ^ ".index") (Jsonx.member "index" j) in
+  let* logprobs =
+    logprobs_of (what ^ ".logprobs") (Jsonx.member "logprobs" j)
+  in
+  let* msg =
+    Option.fold
+      ~none:(invalid (what ^ ".message: missing"))
+      ~some:Result.ok (Jsonx.member "message" j)
+  in
+  let* role =
+    req_string (what ^ ".message.role") (Jsonx.member "role" msg)
+  in
+  let* (() : unit) =
+    if String.equal role "assistant" then Ok ()
+    else invalid "choice message role"
+  in
+  let* content = content_of (what ^ ".message.content") msg in
+  let* reasoning_content =
+    opt_string
+      (what ^ ".message.reasoning_content")
+      (Jsonx.member "reasoning_content" msg)
+  in
+  let* details =
+    details_of
+      (what ^ ".message.reasoning_details")
+      (Jsonx.member "reasoning_details" msg)
+  in
+  let* signature =
+    Result.map
+      (Option.map Msgx.thought_signature_of_parsed)
+      (opt_string
+         (what ^ ".message.thought_signature")
+         (Jsonx.member "thought_signature" msg))
+  in
+  let* stop_reason =
+    let* s =
+      opt_string (what ^ ".stop_reason") (Jsonx.member "stop_reason" j)
+    in
+    Option.fold ~none:(Ok None)
+      ~some:(fun (v : string) ->
+        Result.map Option.some (Stop_reason.of_string v))
+      s
+  in
+  Ok
+    { Choice.finish;
+      index;
+      content;
+      reasoning_content;
+      reasoning_details = details;
+      thought_signature = signature;
+      logprobs;
+      stop_reason }
+
+(* i counts the position for error paths; the wire index member is
+   data, not the address of the fault. *)
+let rec choices_of (i : int) (items : Jsonx.t list) :
+    (Choice.t list, Errx.t) result =
+  match items with
+  | [] -> Ok []
+  | item :: rest ->
+    let* c = choice_of ("choices[" ^ string_of_int i ^ "]") item in
+    let* cs = choices_of (i + 1) rest in
+    Ok (c :: cs)
+
+(* ---------- cost ---------- *)
+
+let cost_of (o : Jsonx.t option) : (Cost.t option, Errx.t) result =
+  Option.fold ~none:(Ok None)
+    ~some:(fun v ->
+      let* usd = req_nonneg_dec "cost.usd" (Jsonx.member "usd" v) in
+      let* diem = req_nonneg_dec "cost.diem" (Jsonx.member "diem" v) in
+      Ok (Some { Cost.usd; diem }))
+    o
+
+(* ---------- the typed response ---------- *)
+
+type t =
+  { id : string;
+    model : string;
+    created : int;
+    choices : Choice.t list;
+    usage : Usage.t;
+    cost : Cost.t option;
+    venice_parameters_raw : Jsonx.t option;
+    prompt_logprobs_raw : Jsonx.t option }
+
+let id (r : t) : string = r.id
+let model (r : t) : string = r.model
+let created (r : t) : int = r.created
+let choices (r : t) : Choice.t list = r.choices
+let usage (r : t) : Usage.t = r.usage
+let cost (r : t) : Cost.t option = r.cost
+let venice_parameters_raw (r : t) : Jsonx.t option = r.venice_parameters_raw
+let prompt_logprobs_raw (r : t) : Jsonx.t option = r.prompt_logprobs_raw
+
+let of_string (s : string) : (t, Errx.t) result =
+  let* j = Jsonx.parse s in
+  let* (() : unit) =
+    Option.fold
+      ~none:(invalid "not a JSON object")
+      ~some:(fun ((_ : (string * Jsonx.t) list)) -> Ok ())
+      (Jsonx.as_obj j)
+  in
+  let* id = req_string "id" (Jsonx.member "id" j) in
+  let* model = req_string "model" (Jsonx.member "model" j) in
+  let* created = req_nat "created" (Jsonx.member "created" j) in
+  let* obj = req_string "object" (Jsonx.member "object" j) in
+  let* (() : unit) =
+    if String.equal obj "chat.completion" then Ok ()
+    else invalid "object: not chat.completion"
+  in
+  let* usage = usage_of (Jsonx.member "usage" j) in
+  (* Absent choices parses as [] (the swagger marks the member
+     optional in so many words). *)
+  let* choices =
+    Option.fold ~none:(Ok [])
+      ~some:(fun v ->
+        Option.fold
+          ~none:(invalid "choices: not an array")
+          ~some:(choices_of 0) (Jsonx.as_list v))
+      (Jsonx.member "choices" j)
+  in
+  let* cost = cost_of (Jsonx.member "cost" j) in
+  Ok
+    { id;
+      model;
+      created;
+      choices;
+      usage;
+      cost;
+      venice_parameters_raw = Jsonx.member "venice_parameters" j;
+      prompt_logprobs_raw = Jsonx.member "prompt_logprobs" j }

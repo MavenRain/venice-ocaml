@@ -65,6 +65,38 @@ module Cache = struct
   let ephemeral : t = Ephemeral
 end
 
+module Reasoning_detail = struct
+  (* One reasoning_details item, exact by construction: the record
+     wraps the raw parsed object, so re-emission preserves the member
+     set AND order as received (Jobj is an assoc list in parse order
+     and Jsonx.emit is deterministic over it). The item schema does
+     not set additionalProperties: false, so unknown members are
+     wire-legal and must survive the round trip. Minted only by the
+     seam function reasoning_detail_of_json below. *)
+  type t =
+    { rd_type : string;
+      rd_raw : Jsonx.t }
+
+  let str_member (name : string) (d : t) : string option =
+    Option.bind (Jsonx.member name d.rd_raw) Jsonx.as_string
+
+  let type_ (d : t) : string = d.rd_type
+  let data (d : t) : string option = str_member "data" d
+  let format (d : t) : string option = str_member "format" d
+  let id (d : t) : string option = str_member "id" d
+  let text (d : t) : string option = str_member "text" d
+
+  (* The swagger says number, not integer; no int coercion. *)
+  let index (d : t) : Jsonx.t option = Jsonx.member "index" d.rd_raw
+end
+
+module Thought_signature = struct
+  (* Newtype over the wire string ("pass it back exactly as
+     received"). Minted only by the seam function
+     thought_signature_of_parsed below. *)
+  type t = string
+end
+
 (* Unbranded payloads (no type variable). *)
 type text_part =
   { tp_text : string;
@@ -85,7 +117,10 @@ type msg =
         parts : text_part list }
   | Massistant of
       { name : string option;
-        content : string option }
+        content : string option;
+        reasoning_content : string option;
+        reasoning_details : Reasoning_detail.t list;
+        thought_signature : Thought_signature.t option }
   | Mtool of
       { name : string option;
         tool_call_id : string;
@@ -202,15 +237,31 @@ let developer_parts ?name (parts : text_part list) :
   let* ps = nonempty_list "developer parts" parts in
   Ok (Mdeveloper { name; parts = ps })
 
-(* Extensible shape: the tools milestone adds ?tool_calls (and M10's
-   passthrough values) as optional arguments, no API break. The
-   all-absent case rejects at mint, so M7 content is always present. *)
-let assistant ?name ?content (() : unit) : (msg, Errx.t) result =
+(* Extensible shape: the tools milestone adds ?tool_calls as an
+   optional argument, no API break. Content (or, at M10a, tool_calls)
+   is still required: the M10 reasoning passthrough members alone do
+   not make a legal assistant message. A passed ?reasoning_details:[]
+   is accepted and emits nothing (the label behaves as omitted):
+   neither schema sets minItems on reasoning_details, and the respx
+   Choice projection collapses absent and [] to the same [], so the
+   parse-then-passthrough call must not Error on a wire-legal
+   absent-or-empty array. *)
+let assistant ?name ?content ?reasoning_content ?reasoning_details
+    ?thought_signature (() : unit) : (msg, Errx.t) result =
+  let details : Reasoning_detail.t list =
+    Option.fold ~none:[] ~some:Fun.id reasoning_details
+  in
   Option.fold
     ~none:(invalid "assistant: content or tool_calls required")
     ~some:(fun (s : string) ->
       let* t = require_text "assistant content" s in
-      Ok (Massistant { name; content = Some t }))
+      Ok
+        (Massistant
+           { name;
+             content = Some t;
+             reasoning_content;
+             reasoning_details = details;
+             thought_signature }))
     content
 
 let tool ?name ~(tool_call_id : string) (s : string) :
@@ -271,7 +322,12 @@ let nonempty (msgs : 'c t list) : ('c nonempty, Errx.t) result =
    collapse rule is per-message: a single cache-less text part emits
    the bare-string content form, every other shape the array form.
    Tool content is always a bare string (the schema has no anyOf
-   there). Assistant emits content only when present. *)
+   there). Assistant emits role, content, name, reasoning_content,
+   reasoning_details, thought_signature: the three M10 passthrough
+   members APPEND to the frozen M7 order, so every earlier golden
+   stays byte-identical, and each present member emits only when
+   present (reasoning_details only when nonempty, each item's raw
+   Jsonx.t verbatim). *)
 
 let cache_json (c : Cache.t) : Jsonx.t =
   match c with
@@ -287,6 +343,21 @@ let opt_string (name : string) (v : string option) :
   Option.fold ~none:[]
     ~some:(fun (s : string) -> [ (name, Jsonx.Jstring s) ])
     v
+
+(* An empty passthrough list emits no member at all (D4: absent and []
+   collapse); a nonempty one re-emits each item's raw object
+   verbatim. *)
+let details_member (ds : Reasoning_detail.t list) :
+    (string * Jsonx.t) list =
+  match ds with
+  | [] -> []
+  | _ :: _ ->
+    [ ( "reasoning_details",
+        Jsonx.Jlist
+          (List.map
+             (fun (d : Reasoning_detail.t) -> d.Reasoning_detail.rd_raw)
+             ds) )
+    ]
 
 let emit_text_part (p : text_part) : Jsonx.t =
   Jsonx.Jobj
@@ -349,10 +420,15 @@ let emit_plain (m : msg) : Jsonx.t =
     Jsonx.Jobj
       ([ role_member "developer"; ("content", collapse_text_parts parts) ]
        @ opt_string "name" name)
-  | Massistant { name; content } ->
+  | Massistant
+      { name; content; reasoning_content; reasoning_details;
+        thought_signature } ->
     Jsonx.Jobj
       ((role_member "assistant" :: opt_string "content" content)
-       @ opt_string "name" name)
+       @ opt_string "name" name
+       @ opt_string "reasoning_content" reasoning_content
+       @ details_member reasoning_details
+       @ opt_string "thought_signature" thought_signature)
   | Mtool { name; tool_call_id; content } ->
     Jsonx.Jobj
       ([ role_member "tool";
@@ -383,7 +459,8 @@ let emit_message (m : 'c t) : Jsonx.t =
 let emit (msgs : 'c nonempty) : Jsonx.t =
   Jsonx.Jlist (List.map emit_message msgs)
 
-(* Internal seam for sessx (venice.mli does not re-export it). *)
+(* Internal seam for sessx, chatx and respx (and the tests);
+   venice.mli does not re-export it. *)
 
 let part_text (p : part_repr) : string option =
   match p with
@@ -425,3 +502,31 @@ let cipher_hex (m : 'c t) ~(hex : string) : ('c t, Errx.t) result =
   | Mplain (Mdeveloper _) -> invalid "cipher_hex: developer role"
   | Mplain (Massistant _) -> invalid "cipher_hex: assistant role"
   | Mplain (Mtool _) -> invalid "cipher_hex: tool role"
+
+(* Passthrough mints (D3): parse-only, named seam functions so M11
+   ssex / M14 streamx can mint the identical types from delta JSON
+   without routing through respx's whole-document parser. Neither
+   type gets a public of_string: a Reasoning_detail.t /
+   Thought_signature.t that reaches assistant from outside the
+   library can only have come from a real parsed response. *)
+
+(* Validates type present and a string; keeps every member verbatim,
+   unknown members included (the item schema does not set
+   additionalProperties: false). *)
+let reasoning_detail_of_json (j : Jsonx.t) :
+    (Reasoning_detail.t, Errx.t) result =
+  Option.fold
+    ~none:(invalid "reasoning_detail: not an object")
+    ~some:(fun ((_ : (string * Jsonx.t) list)) ->
+      Option.fold
+        ~none:(invalid "reasoning_detail: type: missing")
+        ~some:(fun ty ->
+          Option.fold
+            ~none:(invalid "reasoning_detail: type: not a string")
+            ~some:(fun (s : string) ->
+              Ok { Reasoning_detail.rd_type = s; rd_raw = j })
+            (Jsonx.as_string ty))
+        (Jsonx.member "type" j))
+    (Jsonx.as_obj j)
+
+let thought_signature_of_parsed (s : string) : Thought_signature.t = s

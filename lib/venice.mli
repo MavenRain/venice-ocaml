@@ -16,6 +16,7 @@ module Error : sig
     | Msg_invalid of string
     | Head_invalid of string
     | Chat_invalid of string
+    | Resp_invalid of string
 
   val to_string : t -> string
 end
@@ -361,6 +362,33 @@ module Model : sig
   val effort_options : 'c t -> string list
 end
 
+module Reasoning_detail : sig
+  (* One reasoning_details item from a parsed chat response, exact by
+     construction: the value wraps the raw parsed object, so passing
+     it back through Msg.assistant re-emits the member set and order
+     exactly as received (unknown members included). Minted only by
+     the response parser; no public of_string exists. *)
+  type t
+
+  val type_ : t -> string
+  (* the one required member *)
+
+  val data : t -> string option
+  val format : t -> string option
+  val id : t -> string option
+  val text : t -> string option
+
+  val index : t -> Json.t option
+  (* the swagger says number; no int coercion *)
+end
+
+module Thought_signature : sig
+  (* Opaque Gemini thought signature from a parsed chat response
+     ("pass it back exactly as received"). Minted only by the
+     response parser; no public of_string exists. *)
+  type t
+end
+
 module Msg : sig
   (* Typed chat messages. Branded values (media parts, user messages,
      'c nonempty) carry the phantom base row 'c of the witnessed
@@ -401,10 +429,20 @@ module Msg : sig
      the string forms are the sugar that emits the collapsed form *)
 
   val assistant :
-    ?name:string -> ?content:string -> unit -> (msg, Error.t) result
-  (* rejects the all-absent case at mint; the tools milestone adds
-     ?tool_calls and the M10 passthrough values as pure
-     optional-argument additions, no API break *)
+    ?name:string ->
+    ?content:string ->
+    ?reasoning_content:string ->
+    ?reasoning_details:Reasoning_detail.t list ->
+    ?thought_signature:Thought_signature.t ->
+    unit ->
+    (msg, Error.t) result
+  (* content (or, at M10a, tool_calls) is still required: the
+     reasoning passthrough members alone do not make a legal
+     assistant message. ?reasoning_details:[] is accepted and emits
+     nothing (the label behaves as omitted), so the
+     parse-then-passthrough call Response.Choice feeds directly. The
+     tools milestone adds ?tool_calls as a pure optional-argument
+     addition, no API break *)
 
   val tool :
     ?name:string ->
@@ -759,4 +797,131 @@ module Chat : sig
 
   val emit : 'c t -> string
   (* the request body bytes; deterministic, byte-stable member order *)
+end
+
+(* M10 chat response domain. of_string parses a 200-response body:
+   the whole document parses or the whole document rejects
+   (all-or-nothing; a tool-role choice message rejects everything).
+   Unknown members are tolerated everywhere (the response schema
+   never sets additionalProperties: false); required members, the
+   closed enums, and the >= 0 floors are enforced. logprobs is the
+   one deliberate required-list tolerance: absent-or-null reads None
+   (the swagger's own example bodies show logprobs: null). Streaming
+   deltas are M11; tool_calls typing is M10a. *)
+
+module Response : sig
+  module Finish : sig
+    (* finish_reason wire enum, closed; transparent by design.
+       Tool_calls parses even though tool_calls typing is M10a, so
+       callers can detect and fail forward. *)
+    type t =
+      | Stop
+      | Length
+      | Tool_calls
+
+    val to_string : t -> string
+    (* lowercase wire names *)
+
+    val of_string : string -> (t, Error.t) result
+  end
+
+  module Stop_reason : sig
+    (* stop_reason wire enum, closed; the member itself is
+       nullable. *)
+    type t =
+      | Stop
+      | Length
+
+    val to_string : t -> string
+    val of_string : string -> (t, Error.t) result
+  end
+
+  module Usage : sig
+    (* The three counts are required wire integers; the details
+       members project as options (null or absent details objects
+       collapse to None). No cross-field arithmetic check: prompt +
+       completion vs total is server-owned. *)
+    type t
+
+    val completion_tokens : t -> int
+    val prompt_tokens : t -> int
+    val total_tokens : t -> int
+
+    val reasoning_tokens : t -> int option
+    (* completion_tokens_details.reasoning_tokens *)
+
+    val cached_tokens : t -> int option
+    (* prompt_tokens_details.cached_tokens *)
+
+    val cache_creation_tokens : t -> int option
+    (* prompt_tokens_details.cache_creation_input_tokens *)
+  end
+
+  module Logprobs : sig
+    (* The swagger's flat token record plus top_logprobs; NOT
+       OpenAI's content array. logprob is exact (no float crosses
+       the boundary). *)
+    type entry
+
+    val entry_token : entry -> string
+    val entry_logprob : entry -> Json.dec
+    val entry_bytes : entry -> int list option
+
+    type t
+
+    val token : t -> string
+    val logprob : t -> Json.dec
+    val bytes : t -> int list option
+
+    val top_logprobs : t -> entry list
+    (* absent top_logprobs reads [] *)
+  end
+
+  module Cost : sig
+    (* Optional member; when present both currencies are required
+       and >= 0 (the schema's only minimum: 0 keywords). *)
+    type t
+
+    val usd : t -> Json.dec
+    val diem : t -> Json.dec
+  end
+
+  module Choice : sig
+    (* One parsed assistant choice. content collapses the wire's
+       three variants: a string reads Some, null/absent read None,
+       and a text-parts array reads Some of the parts' texts
+       concatenated in received order (a projection, not a claim the
+       wire sent one string). reasoning_details collapses absent and
+       [] to the same [], so Msg.assistant
+       ?reasoning_details:(Some (reasoning_details c)) round-trips
+       without Error. *)
+    type t
+
+    val finish : t -> Finish.t
+    val index : t -> int
+    val content : t -> string option
+    val reasoning_content : t -> string option
+    val reasoning_details : t -> Reasoning_detail.t list
+    val thought_signature : t -> Thought_signature.t option
+    val logprobs : t -> Logprobs.t option
+    val stop_reason : t -> Stop_reason.t option
+  end
+
+  type t
+
+  val of_string : string -> (t, Error.t) result
+  (* Enforced: top-level id, model, created, object, usage present;
+     object equals "chat.completion"; choice
+     finish_reason/index/message present; the usage counts present,
+     integers, each >= 0; created >= 0; choice index >= 0; cost
+     usd/diem >= 0. Only cost carries a schema minimum: 0; the other
+     floors are SDK-imposed strictness. Enum strings outside the
+     closed sets reject. Absent choices parses as []. *)
+
+  val id : t -> string
+  val model : t -> string
+  val created : t -> int
+  val choices : t -> Choice.t list
+  val usage : t -> Usage.t
+  val cost : t -> Cost.t option
 end

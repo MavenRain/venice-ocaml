@@ -1,8 +1,8 @@
 (* M7 message domain interface. The brand is phantom over one erased
    repr; these abstract types are the in-library enforcement, and
    venice.mli re-abstracts the same surface for library users. The
-   seam block at the bottom is for sessx (and the tests) only:
-   venice.mli does not re-export it. Total, sans-io. *)
+   seam block at the bottom is for sessx, chatx and respx (and the
+   tests); venice.mli does not re-export it. Total, sans-io. *)
 
 module Audio_format : sig
   (* input_audio.format wire enum; transparent by design. *)
@@ -34,6 +34,34 @@ module Cache : sig
      behind a header the swagger does not name (FACTS.md). *)
 end
 
+module Reasoning_detail : sig
+  (* One reasoning_details item, exact by construction: the value
+     wraps the raw parsed object, so re-emission preserves the member
+     set and order as received (unknown members included). Minted
+     only by the reasoning_detail_of_json seam below; no public
+     of_string exists, so a value reaching assistant from outside the
+     library can only have come from a real parsed response. *)
+  type t
+
+  val type_ : t -> string
+  (* the one required member *)
+
+  val data : t -> string option
+  val format : t -> string option
+  val id : t -> string option
+  val text : t -> string option
+
+  val index : t -> Jsonx.t option
+  (* the swagger says number; no int coercion *)
+end
+
+module Thought_signature : sig
+  (* Opaque wire string ("pass it back exactly as received"). Minted
+     only by the thought_signature_of_parsed seam below; no public
+     of_string exists. *)
+  type t
+end
+
 (* Unbranded payloads: no type variable, bind once at structure level,
    reuse across models. The injections below instantiate the row per
    use site inside each Pack continuation. *)
@@ -63,10 +91,18 @@ val developer_parts :
    sugar that emits the collapsed form *)
 
 val assistant :
-  ?name:string -> ?content:string -> unit -> (msg, Errx.t) result
-(* rejects the all-absent case at mint; the tools milestone adds
-   ?tool_calls and the M10 passthrough values as pure
-   optional-argument additions, no API break *)
+  ?name:string ->
+  ?content:string ->
+  ?reasoning_content:string ->
+  ?reasoning_details:Reasoning_detail.t list ->
+  ?thought_signature:Thought_signature.t ->
+  unit ->
+  (msg, Errx.t) result
+(* content (or, at M10a, tool_calls) is still required: the reasoning
+   passthrough members alone do not make a legal assistant message.
+   ?reasoning_details:[] is accepted and emits nothing (the label
+   behaves as omitted). The tools milestone adds ?tool_calls as a
+   pure optional-argument addition, no API break *)
 
 val tool :
   ?name:string -> tool_call_id:string -> string -> (msg, Errx.t) result
@@ -123,7 +159,8 @@ type 'c nonempty
 val nonempty : 'c t list -> ('c nonempty, Errx.t) result
 (* rejects [] ONLY; video counting is out of scope for M7 *)
 
-(* Internal seam for sessx; venice.mli does not re-export it. *)
+(* Internal seam for sessx, chatx and respx (and the tests);
+   venice.mli does not re-export it. *)
 
 val emit : 'c nonempty -> Jsonx.t
 (* the fold of emit_message over the message list *)
@@ -137,3 +174,13 @@ val content_plaintext : 'c t -> string option
 val cipher_hex : 'c t -> hex:string -> ('c t, Errx.t) result
 (* replace user/system content with the dedicated cipher repr case;
    Error on any other role *)
+
+val reasoning_detail_of_json :
+  Jsonx.t -> (Reasoning_detail.t, Errx.t) result
+(* the one Reasoning_detail mint: validates type present and a
+   string, keeps every member verbatim (unknown members included).
+   Named here rather than respx-private because M11 ssex / M14
+   streamx must mint the identical type from delta JSON *)
+
+val thought_signature_of_parsed : string -> Thought_signature.t
+(* the one Thought_signature mint; same seam rationale *)
