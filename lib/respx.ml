@@ -176,7 +176,9 @@ module Choice = struct
     | Errx.Resp_invalid s -> s
     | Errx.Hex_invalid _ | Errx.B64_invalid _ | Errx.Json_invalid _
     | Errx.Model_invalid _ | Errx.Param_invalid _ | Errx.Head_invalid _
-    | Errx.Chat_invalid _ | Errx.Sse_invalid _ | Errx.Chunk_invalid _ ->
+    | Errx.Chat_invalid _ | Errx.Sse_invalid _ | Errx.Chunk_invalid _
+    | Errx.Key_invalid _ | Errx.Req_invalid _ | Errx.Wire_invalid _
+    | Errx.Transport_failed _ ->
       Errx.to_string e
 
   let tool_calls (c : t) : (Msgx.Tool_call.t list, Errx.t) result =

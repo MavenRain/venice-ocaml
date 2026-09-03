@@ -19,6 +19,10 @@ module Error : sig
     | Resp_invalid of string
     | Sse_invalid of string
     | Chunk_invalid of string
+    | Key_invalid of string
+    | Req_invalid of string
+    | Wire_invalid of string
+    | Transport_failed of string
 
   val to_string : t -> string
 end
@@ -1174,5 +1178,208 @@ module Sse : sig
     val created : t -> int
     val choices : t -> Choice.t list
     val usage_opt : t -> Response.Usage.t option
+  end
+end
+
+module Api_key : sig
+  (* The Venice API key. Bytes 0x21..0x7E only, 1..512 of them, so no
+     space, control byte or high byte can fold a header or split a
+     curl config line.
+
+     There is deliberately no projection here: the key has no
+     printable image THROUGH THE PUBLIC API. This is a boundary, not
+     a guarantee. Venice__Keyx.reveal stays reachable from any
+     executable that links the library, exactly as the test suite
+     reaches the other internal modules. *)
+  type t
+
+  val make : string -> (t, Error.t) result
+  val from_env : unit -> (t, Error.t) result
+  (* reads VENICE_API_KEY; an unset variable rejects by name *)
+end
+
+module Http : sig
+  (* The sans-io request layer. Nothing here touches a socket or a
+     process: Http builds and validates, Transport carries. *)
+
+  module Endpoint : sig
+    (* The API base. https only, no trailing slash, no query and no
+       fragment, 1..2048 bytes. *)
+    type t
+
+    val default : t
+    (* https://api.venice.ai/api/v1 *)
+
+    val of_string : string -> (t, Error.t) result
+    val to_string : t -> string
+  end
+
+  module Route : sig
+    (* The four M13 routes, indexed by their method. get and post are
+       uninhabited markers, so Request.get on a POST route and
+       Request.post on a GET route fail to TYPECHECK. There is no
+       run-time method rejection to test. *)
+    type get
+    type post
+    type 'm t
+
+    val chat_completions : post t
+    val models : get t
+    val tee_attestation : get t
+    val tee_signature : get t
+    val path : 'm t -> string
+  end
+
+  module Request : sig
+    (* One request, validated at construction. Query pairs are
+       percent-encoded per RFC 3986: unreserved bytes pass, every
+       other byte becomes %XX in UPPERCASE hex, one escape per byte,
+       so UTF-8 encodes per byte. At most 16 pairs, no duplicate key,
+       no empty key.
+
+       Header names are RFC 7230 tchar, 1..128 bytes, lowercased on
+       the way in, so the lowercased name is what headers and to_log
+       show. The reserved names the transport owns reject in any
+       casing: authorization, proxy-authorization, cookie,
+       content-type, content-length, host, expect,
+       transfer-encoding, connection, accept, accept-encoding and
+       user-agent. At most 32 headers, no
+       duplicate name. Values are 0x20..0x7E plus HTAB, at most 8192
+       bytes, no leading or trailing whitespace, so no value can fold
+       a header or inject a line.
+
+       A POST body is rendered ONCE at construction and the rendered
+       bytes are carried, so the transport never re-emits JSON and
+       the byte count it checks is the byte count it sends. The raw
+       cap is 4_194_304 bytes, which stays under the curl config-line
+       cap after the worst-case escaping. *)
+    type meth =
+      | Get
+      | Post
+
+    type t
+
+    val get :
+      ?query:(string * string) list ->
+      ?headers:(string * string) list ->
+      Route.get Route.t ->
+      (t, Error.t) result
+
+    val post :
+      ?headers:(string * string) list ->
+      Route.post Route.t ->
+      body:Json.t ->
+      (t, Error.t) result
+
+    val meth : t -> meth
+    val path : t -> string
+    val query : t -> (string * string) list
+    val headers : t -> (string * string) list
+    val body : t -> Json.t option
+    val rendered : t -> string option
+    (* the body bytes exactly as the transport will send them *)
+
+    val body_bytes : t -> int
+    val url : Endpoint.t -> t -> string
+    val to_log : t -> string
+    (* "METH PATH?QUERY headers=[n1;n2] body_bytes=N", header NAMES
+       only, so a log line can never carry a value or a secret *)
+  end
+
+  module Wire : sig
+    (* The incremental response-head reader. It is fed arbitrary
+       chunk boundaries and returns the head once, with the leftover
+       body bytes.
+
+       A line ends with CRLF or with a bare LF, because curl -i
+       copies the server bytes verbatim and real servers send both.
+       A bare CR inside a line rejects, and an obs-fold continuation
+       line rejects. At most four 1xx blocks are skipped. The head
+       may not exceed 65536 bytes. *)
+    type head =
+      { version : string;
+        status : int;
+        reason : string;
+        pairs : (string * string) list
+      }
+
+    type t
+
+    type step =
+      | More of t
+      | Head of head * string
+
+    val make : ?max_head_bytes:int -> unit -> (t, Error.t) result
+    val feed : t -> string -> (step, Error.t) result
+    (* Feeding after Head is impossible by construction: the Head
+       step hands back no machine. feed is pure, so the same machine
+       and the same bytes always give the same step. *)
+  end
+end
+
+module Transport : sig
+  (* How a request reaches Venice. M15 will functorize the client
+     over S, so a test links Fake and a program links Curl with no
+     other change. *)
+
+  module type S = sig
+    type t
+    type body
+
+    val send :
+      t ->
+      key:Api_key.t ->
+      Http.Request.t ->
+      (Http.Wire.head * body, Error.t) result
+
+    val read : body -> (string option, Error.t) result
+    val read_all : ?cap:int -> body -> (string, Error.t) result
+    val close : body -> (unit, Error.t) result
+  end
+
+  module Curl : sig
+    (* The curl subprocess. argv is [binary; "-q"; "-K"; "-"], so ps
+       shows no secret and no URL: the key and the URL arrive on
+       stdin as a curl config and die with the process. Errors carry
+       the last 4096 bytes of stderr with the key bytes replaced by
+       "[redacted]". *)
+    include S
+
+    val make :
+      ?binary:string ->
+      ?endpoint:Http.Endpoint.t ->
+      ?connect_timeout:int ->
+      ?idle_timeout:int ->
+      ?max_time:int ->
+      unit ->
+      (t, Error.t) result
+    (* Defaults: "curl", Endpoint.default, 30, 300, no max_time. make
+       probes the binary once with --version and rejects below curl
+       7.67.0. It also sets SIGPIPE to ignore, once per process. *)
+
+    val version : t -> string
+    val max_line : t -> int
+    (* the curl config-line cap for this binary: 10_485_248 from
+       8.2.0, 65_536 below it *)
+  end
+
+  module Fake : sig
+    (* A scripted transport for tests. No process, no network. *)
+    include S
+
+    type exchange
+
+    val exchange :
+      head:string ->
+      chunks:string list ->
+      ?close_error:string ->
+      unit ->
+      exchange
+    (* head is the raw head bytes, terminator included; bytes after
+       the blank line become the first read *)
+
+    val make : exchange list -> t
+    val requests : t -> Http.Request.t list
+    (* every request send accepted, in call order *)
   end
 end

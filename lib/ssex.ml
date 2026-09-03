@@ -296,7 +296,9 @@ let with_last (last : string option) (e : Errx.t) : Errx.t =
   | Errx.Hex_invalid _ | Errx.B64_invalid _ | Errx.Json_invalid _
   | Errx.Model_invalid _ | Errx.Param_invalid _ | Errx.Msg_invalid _
   | Errx.Head_invalid _ | Errx.Chat_invalid _ | Errx.Resp_invalid _
-  | Errx.Chunk_invalid _ -> e
+  | Errx.Chunk_invalid _ | Errx.Key_invalid _ | Errx.Req_invalid _
+  | Errx.Wire_invalid _ | Errx.Transport_failed _ ->
+    e
 
 (* Close policy (A4): Require_done (default) rejects a close before
    Done even over clean framing (a mid-completion cut is detectable

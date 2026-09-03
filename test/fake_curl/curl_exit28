@@ -1,0 +1,9 @@
+#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'curl 8.5.0 (fake) libcurl/8.5.0\n'
+  exit 0
+fi
+cat > /dev/null
+printf 'HTTP/1.1 200 OK\r\n\r\npart'
+printf 'curl: (28) Operation timed out\n' >&2
+exit 28

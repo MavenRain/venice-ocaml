@@ -204,6 +204,10 @@ live probe confirms it (M2 pins the probe fixtures). Re-verify on SDK bumps.
   a usage-only final chunk);  whether E2EE streams end with [DONE];
   first-chunk search-results member shape;  chunk finish_reason values.
 
+## Transport
+- The curl facts live in CURL.md at the repo root.  This file stays
+  the VENICE wire digest, so its sources are Venice URLs only.
+
 ## Sources
 - https://docs.venice.ai/api-reference/api-spec
 - https://docs.venice.ai/guides/features/tee-e2ee-models

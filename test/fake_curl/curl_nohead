@@ -1,0 +1,8 @@
+#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'curl 8.5.0 (fake) libcurl/8.5.0\n'
+  exit 0
+fi
+cat > /dev/null
+printf 'curl: (52) Empty reply from server\n' >&2
+exit 52

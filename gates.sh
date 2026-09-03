@@ -10,7 +10,7 @@ cd "$here"
 dunecho build
 
 # Test suites; grows one entry per milestone that lands a suite.
-suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex"
+suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_transport test_curlx"
 # The capture sits in an if-condition so a failing suite cannot abort
 # the script (set -e) before its output and name reach the log; the
 # FAIL-text case still guards a suite that prints FAIL yet exits 0.
@@ -27,56 +27,10 @@ for t in $suites; do
   fi
 done
 
-# M7 compile-fail battery: every case must fail against the built
-# library for the EXPECTED reason (asserted error-text substrings,
-# never bare nonzero exit). The control MUST compile first, or the
-# battery is vacuous (wrong include path, stale artifacts).
-cfsrc="$here/compile_fail"
-cfdir="$here/_build/compile_fail"
-cfinc="$here/_build/default/lib/.venice.objs/byte"
-rm -rf "$cfdir"
-mkdir -p "$cfdir"
-cp "$cfsrc"/*.ml "$cfdir/"
-
-if (cd "$cfdir" && ocamlc -c -color never -I "$cfinc" cf_ok_control.ml) ; then
-  echo "compile_fail: control ok"
-else
-  echo "gate: compile-fail control did not compile (battery vacuous)"
-  exit 1
-fi
-
-expect_fail() {
-  src="$1"; shift
-  if out="$( (cd "$cfdir" && ocamlc -c -color never -I "$cfinc" "$src") 2>&1 )"; then
-    echo "gate: $src compiled but must not"
-    exit 1
-  fi
-  for needle in "$@"; do
-    case "$out" in
-      *"$needle"*) ;;
-      *)
-        echo "gate: $src failed for the wrong reason; missing [$needle] in:"
-        echo "$out"
-        exit 1
-        ;;
-    esac
-  done
-  echo "compile_fail: $src rejected as expected"
-}
-
-expect_fail cf_a_unwitnessed.ml "Venice.Model.vision"
-expect_fail cf_b_wrong_witness.ml "Venice.Model.audio" "not compatible"
-expect_fail cf_c_two_models.ml "bound by the constructor" "Pack"
-expect_fail cf_d_stacked.ml "Venice.Model.vision" "not compatible"
-expect_fail cf_e_repack.ml "Venice.Msg.nonempty" "not compatible"
-expect_fail cf_f_effort_wrong_model.ml "Venice.Model.reasoning_effort" "not compatible"
-expect_fail cf_g_tools_wrong_model.ml "Venice.Model.tools" "not compatible"
-expect_fail cf_h_response_format_wrong_model.ml "Venice.Model.response_schema" "not compatible"
-
-# Compile-fail harnesses (M12, M34).
-if [ -x "$here/harness/compile_fail.sh" ]; then
-  "$here/harness/compile_fail.sh"
-fi
+# Compile-fail harnesses (M12, M34). The call is unconditional: a
+# missing or non-executable harness must turn the gate RED, because a
+# skipped battery is a vacuous gate.
+"$here/harness/compile_fail_i.sh"
 
 # Model check + correspondence (M35..M37).
 if [ -x "$here/model/check.sh" ]; then
@@ -88,8 +42,13 @@ fi
 # (quotex + policy, M38+): the omlz subset has no functors, so the
 # Map-based codec layer is zxlint-clean but not omlz-checkable.
 # Paths relative to lib/, core module first (zxlint requirement).
-core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml"
+# curlx.ml and fakex.ml are HOST modules (Unix, Bytes, refs, the one
+# try-with guard): they stay out of this list by design.
+core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml keyx.ml httpx.ml cfgx.ml wirex.ml"
 if [ -n "$core" ]; then
+  # The list is echoed so the gate LOG proves which modules zxlint
+  # covered; zxlint itself prints only a verdict.
+  echo "zxlint core: $core"
   files=""
   for f in $core; do files="$files $here/lib/$f"; done
   # shellcheck disable=SC2086

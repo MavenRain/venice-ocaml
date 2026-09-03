@@ -47,3 +47,13 @@
  (name test_ssex)
  (modules test_ssex)
  (libraries venice))
+
+(test
+ (name test_transport)
+ (modules test_transport)
+ (libraries venice unix))
+
+(test
+ (name test_curlx)
+ (modules test_curlx)
+ (libraries venice unix))

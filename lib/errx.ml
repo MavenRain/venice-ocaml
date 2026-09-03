@@ -3,7 +3,8 @@
    milestones; M3 seeds the codec constructors, M4 adds JSON, M5 the
    model domain, M6 the sampling parameters, M7 the message domain,
    M8 the response-header domain, M9 the chat request domain, M10 the
-   chat response domain, M11 the SSE stream and chunk domains. *)
+   chat response domain, M11 the SSE stream and chunk domains, M13
+   the key, request, wire-head and transport domains. *)
 
 type t =
   | Hex_invalid of string
@@ -17,6 +18,10 @@ type t =
   | Resp_invalid of string
   | Sse_invalid of string
   | Chunk_invalid of string
+  | Key_invalid of string
+  | Req_invalid of string
+  | Wire_invalid of string
+  | Transport_failed of string
 
 let to_string (e : t) : string =
   match e with
@@ -31,3 +36,7 @@ let to_string (e : t) : string =
   | Resp_invalid s -> "resp: " ^ s
   | Sse_invalid s -> "sse: " ^ s
   | Chunk_invalid s -> "chunk: " ^ s
+  | Key_invalid s -> "key: " ^ s
+  | Req_invalid s -> "req: " ^ s
+  | Wire_invalid s -> "wire: " ^ s
+  | Transport_failed s -> "transport: " ^ s

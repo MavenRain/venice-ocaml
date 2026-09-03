@@ -39,3 +39,28 @@ module Tool = Chatx.Tool
 module Chat = Chatx
 module Response = Respx
 module Sse = Ssex
+module Api_key = Keyx
+
+module Http = struct
+  module Endpoint = Httpx.Endpoint
+  module Route = Httpx.Route
+  module Request = Httpx.Request
+  module Wire = Wirex
+end
+
+module Transport = struct
+  module type S = sig
+    type t
+    type body
+
+    val send :
+      t -> key:Keyx.t -> Httpx.Request.t -> (Wirex.head * body, Errx.t) result
+
+    val read : body -> (string option, Errx.t) result
+    val read_all : ?cap:int -> body -> (string, Errx.t) result
+    val close : body -> (unit, Errx.t) result
+  end
+
+  module Curl = Curlx
+  module Fake = Fakex
+end

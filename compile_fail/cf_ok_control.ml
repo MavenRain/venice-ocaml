@@ -85,3 +85,45 @@ let tool_chat (p : Venice.Model.packed) :
 let replay : (Venice.Msg.msg, Venice.Error.t) result =
   Result.bind (Venice.Tool_call.make ~id:"c1" ~name:"f" ~arguments:"{}")
     (fun tc -> Venice.Msg.assistant ~tool_calls:[ tc ] ())
+
+(* M13: the transport surface through the public boundary. Api_key
+   mints, both request builders take their own route method, and the
+   Fake transport answers a scripted exchange. *)
+let key : (Venice.Api_key.t, Venice.Error.t) result =
+  Venice.Api_key.make "sk-test-0123456789"
+
+let listing : (Venice.Http.Request.t, Venice.Error.t) result =
+  Venice.Http.Request.get ~query:[ ("model", "venice-uncensored") ]
+    Venice.Http.Route.models
+
+let completion : (Venice.Http.Request.t, Venice.Error.t) result =
+  Venice.Http.Request.post
+    ~headers:[ ("x-trace", "abc") ]
+    Venice.Http.Route.chat_completions
+    ~body:(Venice.Json.Jobj [ ("stream", Venice.Json.Jbool false) ])
+
+let scripted : Venice.Transport.Fake.t =
+  Venice.Transport.Fake.make
+    [ Venice.Transport.Fake.exchange
+        ~head:"HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\r\n"
+        ~chunks:[ "{}" ] () ]
+
+let round_trip : (string, Venice.Error.t) result =
+  Result.bind key (fun (k : Venice.Api_key.t) ->
+      Result.bind completion (fun (req : Venice.Http.Request.t) ->
+          Result.bind (Venice.Transport.Fake.send scripted ~key:k req)
+            (fun ((_ : Venice.Http.Wire.head), b) ->
+              Result.bind (Venice.Transport.Fake.read_all b)
+                (fun (body : string) ->
+                  Result.map (fun (() : unit) -> body)
+                    (Venice.Transport.Fake.close b)))))
+
+let logged : string list =
+  List.map Venice.Http.Request.to_log
+    (Venice.Transport.Fake.requests scripted)
+
+let base : string =
+  Result.fold
+    ~ok:(fun (r : Venice.Http.Request.t) ->
+      Venice.Http.Request.url Venice.Http.Endpoint.default r)
+    ~error:Venice.Error.to_string listing

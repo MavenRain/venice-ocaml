@@ -30,12 +30,16 @@ Two layers, one repo:
   consumed `Fresh.t` values minted at the host boundary. Every core
   module passes `zxlint` and `omlz check`; the flagship artifact (M40)
   compiles the quote parser + policy core with `omlz build --target=bpf`.
-- **Host (plain OCaml 5).** The curl-subprocess transport behind a
-  `TRANSPORT` signature, the RNG boundary, the wall clock, and the effect
-  handlers for streaming. Effects never cross into the core.
+- **Host (plain OCaml 5).** The curl-subprocess transport (`curlx`) and
+  its scripted twin (`fakex`) behind the `Venice.Transport.S` signature,
+  the RNG boundary, the wall clock, and the effect handlers for
+  streaming. Effects never cross into the core. Host modules link `unix`,
+  may hold refs and `Bytes`, and are exempt from the `zxlint` gate.
 
 The four (plus two) omlz codegen traps and the toolchain pins are in
-`ZXCAML.md` (card copied from x402-caml).
+`ZXCAML.md` (card copied from x402-caml). The curl surface (config
+grammar, escaping table, both config-line caps, the exit-code subset,
+the version probe and the two-pipe IO trap) is in `CURL.md`.
 
 ## 2. Threat model: what the types delete
 
@@ -60,8 +64,9 @@ The four (plus two) omlz codegen traps and the toolchain pins are in
 
 Root module `venice.ml` / `venice.mli` is the only public signature.
 Internal units are x-suffixed (errx bytesx hexx b64x jsonx modelx paramsx
-msgx headx ssex limbsx hmacx keccakx p256x secpx aesx gcmx quotex sigx
-derx attestx sessx clientx streamx), hidden behind it.
+msgx headx ssex keyx httpx cfgx wirex curlx fakex limbsx hmacx keccakx
+p256x secpx aesx gcmx quotex sigx derx attestx sessx clientx streamx),
+hidden behind it.
 
 ```ocaml
 module Model : sig
@@ -116,6 +121,48 @@ module Session : sig
     (* contents leave only as Ciphertext.t hex; no plaintext API exists *)
 end
 
+module Api_key : sig
+  type t
+  val make : string -> (t, Error.t) result   (* no projection is published *)
+end
+
+module Http : sig
+  module Endpoint : sig type t val default : t end
+  module Route : sig
+    type get and post                        (* uninhabited method markers *)
+    type 'm t                                (* method is a phantom index *)
+    val chat_completions : post t
+    val models : get t
+  end
+  module Request : sig
+    type t
+    val get : ?query:(string * string) list -> ?headers:(string * string) list ->
+      Route.get Route.t -> (t, Error.t) result
+    val post : ?headers:(string * string) list ->
+      Route.post Route.t -> body:Json.t -> (t, Error.t) result
+  end
+  module Wire : sig
+    type head = { version : string;  status : int;  reason : string;
+                  pairs : (string * string) list }
+    type t and step = More of t | Head of head * string
+    val feed : t -> string -> (step, Error.t) result
+  end
+end
+
+module Transport : sig
+  module type S = sig
+    type t and body
+    val send : t -> key:Api_key.t -> Http.Request.t ->
+      (Http.Wire.head * body, Error.t) result
+    val read : body -> (string option, Error.t) result
+    val read_all : ?cap:int -> body -> (string, Error.t) result
+    val close : body -> (unit, Error.t) result
+  end
+  module Curl : sig include S val make : ?binary:string -> unit -> (t, Error.t) result end
+  module Fake : sig include S  type exchange  val make : exchange list -> t end
+  (* Curl and Fake are both host layer *)
+end
+
 module Stream : sig
   type _ Effect.t += Delta : Sse.Chunk.Delta.t -> unit Effect.t   (* host layer *)
   val run : (unit -> 'a) -> on_delta:(Sse.Chunk.Delta.t -> unit) -> 'a
@@ -137,6 +184,12 @@ standard base64). New crypto written here: keccak-256, secp256k1
 reader, and the TDX quote parser. No external HTTP dependency: the host
 transport shells out to curl behind a signature; tests use a fake
 transport.
+
+The host layer links the compiler-distributed `unix` library for
+processes, pipes and `select`. `venice_ocaml.opam` needs no new depend,
+because `unix` ships with OCaml >= 5.1. That is a decision, not a gap:
+an opam depend on `unix` would pin a package that the compiler already
+provides.
 
 ## 5. Model plan (model/)
 
@@ -193,9 +246,9 @@ plus a full-edge differential sweep (x402-caml conformance pattern).
 | M10 | chat response parser: choices, usage, finish_reason variants + tests;  produces the reasoning_content / reasoning_details / thought_signature values whose request-side passthrough joins `assistant` as optional arguments |
 | M10a | tools / function-calling: Msgx.Tool_call (raw-verbatim repr, parser-only mint) + `assistant ?tool_calls`;  Respx raw items always parse, the typed Choice view validates with choices[i].tool_calls[j] paths;  the four request members (tools witness-gated + Tool defs, tool_choice, parallel_tool_calls standalone, response_format with a response_schema-witnessed json_schema arm);  modelx grows the response_schema phantom row + extractor;  server tools (web_search / x_search) deferred: no capability gate exists for them and their venice_parameters interaction is unpinned + tests |
 | M11 | ssex: incremental SSE state machine, bounded, data:/[DONE], CRLF and LF + delta parse + tests |
-| M12 | compile-fail harness I: domain misuses + compiling control |
+| M12 | compile-fail harness I: domain misuses + compiling control;  the inline battery moves to `harness/compile_fail_i.sh` and gates.sh calls it UNCONDITIONALLY (a missing or non-executable harness is a red gate, never a silent skip);  cases cf_a..cf_m, where cf_k (no key projection) and cf_l (wrong route method) are M13 boundary cases riding in the harness-I extraction |
 | **C: transport + effects** | |
-| M13 | transport boundary: sans-io Request/Response, curl-subprocess host transport, API-key redaction, fake transport + tests |
+| M13 | transport boundary: `keyx` (opaque API key, no published projection), `httpx` (Endpoint, phantom-indexed Route, Request mint with percent-encoded query and a reserved-header table), `cfgx` (the pure curl config renderer, the ONE place the key becomes bytes), `wirex` (incremental head reader, CRLF or bare LF per line, 1xx skipping), `curlx` (curl subprocess over raw fds and `Unix.select`, version probe, config-line cap, stderr ring, key redaction) and `fakex` (scripted twin) behind `Venice.Transport.S`;  test_transport + test_curlx |
 | M14 | streamx: effect Delta, handlers (run/iter/fold), direct-style demo, scripted-transport determinism tests;  cross-chunk accumulation of the M11 ssex tool_call fragments into Msgx.Tool_call (M11 ships the per-chunk fragment view only) |
 | M15 | clientx: chat, chat_stream, models; bounded typed retry/backoff honoring reset headers; fake-transport e2e + tests |
 | **D: crypto tower (core subset)** | |
@@ -237,3 +290,8 @@ harnesses + model check + correspondence + `zxlint --errors-only` +
 milestone lands BUILT + GATED + MUTATION-CONFIRMED (behavioral mutants;
 KILLED(compile) is vacuous) + REVIEWED before staging. Nothing is
 committed by the assistant.
+
+Host modules (`curlx`, `fakex`) are exempt from `zxlint` and hold the
+one try-with guard in the repo. They stay out of the `core=` list in
+`gates.sh` by design, because they own the process, the refs and the
+`Bytes` buffers that the core forbids.
