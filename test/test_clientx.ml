@@ -558,6 +558,46 @@ let s_stream_cut : obs =
     [ answer sse_head stream_body ]
     (fun (cl : C.t) -> answer_of stream_render (stream_call count_one cl))
 
+(* M16 (M15 verify residual 3, the READ half). The application/json
+   refusal path reads the body BEFORE it refuses: chat_stream binds
+   read_then_close, and read_then_close calls T.read_all. Fakex.read_all
+   drives the Fakex read itself, so the test_streamx precedent that
+   overrides read only would leave this path green and the row would
+   observe Client_invalid. This fixture overrides read_all instead. The
+   head is a 2xx application/json, the read FAILS and the close
+   SUCCEEDS, so the Result.bind never reaches its continuation and the
+   caller is told the TRANSPORT error, not the "server answered
+   application/json, not a stream" text. The close half of the residual
+   stays open and is named in the M16 residuals. *)
+module Json_read_fail = struct
+  include F
+
+  let read_all ?cap:(_ : int option) (_ : body) : (string, E.t) result =
+    Error (E.Transport_failed "read boom")
+end
+
+module Cjf = Cl.Make (Json_read_fail) (Ck.Fake)
+
+let broken_answer (text : string) : answer =
+  { a_text = text; a_head = "none"; a_ladder = []; a_stop = "none" }
+
+let s_stream_json_read : answer =
+  Result.fold
+    ~ok:(fun (k : K.t) ->
+      Result.fold
+        ~ok:(fun (cl : Cjf.t) ->
+          Option.fold ~none:(broken_answer "test fixture missing")
+            ~some:(fun (Any ch) ->
+              answer_of stream_render (Cjf.chat_stream cl ch count_all))
+            any_chat)
+        ~error:(fun (e : E.t) -> broken_answer ("failed " ^ E.to_string e))
+        (Cjf.make ~key:k
+           ~transport:(F.make [ answer ok_head completion ])
+           ~clock:(Ck.Fake.make ~now:(now ()) ())
+           ()))
+    ~error:(fun (e : E.t) -> broken_answer ("failed " ^ E.to_string e))
+    key_result
+
 (* ---------- max_body window ---------- *)
 
 let window_text (r : (C.t, E.t) result) : string =
@@ -821,7 +861,10 @@ let stream_checks : (string * bool) list =
     ( "clientx: the cut stream still closed the body once",
       Int.equal s_stream_cut.o_closes 1 );
     ( "clientx: the cut stream is not an error",
-      String.equal s_stream_cut.o_stop "none" ) ]
+      String.equal s_stream_cut.o_stop "none" );
+    ( "clientx: a failing read on the application/json refusal keeps the \
+       transport text",
+      String.equal s_stream_json_read.a_text "failed transport: read boom" ) ]
 
 (* D11: no error text, no obstacle text and no rendered stop may carry
    a key byte. The test key is distinctive, so a substring search is

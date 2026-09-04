@@ -60,6 +60,7 @@ the version probe and the two-pipe IO trap) is in `CURL.md`.
 | Malformed stream | SSE smuggling, unbounded buffers | strict incremental SSE machine, bounded buffers, total |
 | Secret leak in logs | API key / session key in traces | redaction at the transport boundary; zeroization sweep at M37 |
 | Retry storm / double bill | naive retry of a POST after a timeout | closed `Obstacle` sum: only never-sent transport failures, 429 and the three gateway statuses retry;  attempts, per-wait and total caps are policy fields;  a server hint above the cap stops instead of clamping |
+| Timing side channel on client secrets | variable-time bignum under an ephemeral ECDH scalar | limbsx is variable-time by design;  every consumer that touches a secret (M20 ECDH, M29 keygen) states its ladder shape in its brief;  a constant-time tower is a hardening candidate at M39 |
 
 ## 3. API shape (lib/)
 
@@ -284,6 +285,10 @@ OCaml 5 compiler, so `streamx` needs no library for the one handler.
 `Transport.S` boundary, and the transport owns the file descriptors.
 `accx` is pure and stdlib-only.
 
+M16 adds no depend.  The python oracle is a gate-time tool like the
+shell of the compile-fail harness, never a build input;  gates.sh calls
+it unconditionally.
+
 ## 5. Model plan (model/)
 
 `session_core.ml` is the ONE transition semantics (attest, establish,
@@ -316,6 +321,9 @@ plus a full-edge differential sweep (x402-caml conformance pattern).
 - Bounded SSE buffers (max line and max event bytes are constructor
   parameters with defaults).
 - Tag and MAC comparison is constant-time (fold XOR).
+- The limb bignum is NOT constant-time:  `mod_red` and `mod_pow` branch
+  on limb values and on exponent bits, so every secret-bearing caller
+  (M20 ECDH, M29 keygen) states its ladder shape in its own brief.
 - Cert validity and freshness need an explicit `~now` witness.
 - No exceptions, no partial indexing, combinators over match on
   Option/Result, exhaustive matches, effects only in the host layer and
@@ -345,7 +353,7 @@ plus a full-edge differential sweep (x402-caml conformance pattern).
 | M14 | streamx: a PULL cursor over the M11 SSE machine and the M13 transport boundary, with ONE `Effect.Deep.try_with` per run, ONE state ref and one sealed `Delta` effect;  `Stream.Make (T).run` is a bracket that closes the body exactly once and poisons the cursor on every exit path, the consumer included, and the post-[DONE] drain is bounded;  `next`, `iter`, `fold` and `collect` are transport-independent;  accx: the pure cross-chunk accumulator that folds the M11 chunks (tool_call fragments into `Msgx.Tool_call` included) into one chat.completion document and re-parses it with `Respx.of_string`, so the streaming and the non-streaming path share ONE grammar;  `Venice.Sse.Acc` plus `Venice.Stream` in venice.mli, `Chat.to_json` promoted for a streaming request body, `Errx.Stream_invalid`, the `Ssex.Chunk.usage_raw` seam, fakex read and close counters, `examples/stream_demo.ml`, test_accx + test_streamx + cf_n |
 | M15 | clientx: the session layer as `Client.Make (T : Transport.S) (C : Clock.S)`, with `models`, `chat` and `chat_stream` over ONE request built before the loop, so every retry re-sends byte-identical bytes;  the answer is read under a `max_body` cap, a non-2xx keeps its STATUS even when the error body or the close fails, and a 2xx lets a close failure win, because a body that did not close cleanly is not a body that arrived;  retryx: the pure decide table, the doubling backoff, the rate-limit hint folding (the exhausted triple, `retry-after` in seconds, the larger of the two) and the `Policy` window over attempts, base delay, per-wait cap and total budget;  clockx: the `System` and `Fake` wall-clock boundary, so no suite sleeps and no test builds a `System`;  the closed `Obstacle` sum (never-sent transport failure, 429, and 502/503/504 alone) and the closed `Stop` sum, with a server hint above the per-wait cap STOPPING instead of clamping;  `Venice.Delay`, `Venice.Clock`, `Venice.Model_filter` and `Venice.Client` in venice.mli, the M14 drift guard now covering both dependents of the streamx transport copy;  `Errx.Transport_unreachable` for the curl exits that prove no request byte went out (6, 7, 35) and `Errx.Client_invalid` for the client's own rejections;  `Modelx.kind_slug` plus `Model_filter`, so the `type` query parameter is ALWAYS sent and the server default is never relied on;  `Fakex.refusal`, a script slot that rejects the send and still records the request;  the rewritten `examples/stream_demo.ml` over `Client.Make (Transport.Curl) (Clock.System)`;  test_retryx + test_clientx + cf_o |
 | **D: crypto tower (core subset)** | |
-| M16 | limbsx port + modexp + tests |
+| M16 | limbsx: the canonical little-endian 16-bit-limb bignum ported from jose-caml, with an ABSTRACT `t` that is canonical by construction, so every limb sits in `0 .. 0xffff`, no most significant zero limb survives and zero is the empty limb list;  every rejection is an option and the one error type grows by nothing, over `of_int`, `of_limbs` (capped on the limb count BEFORE trimming), `of_be_string`, `to_be_string ~len` under the same byte cap, and a strict `of_hex` that refuses a byte outside the alphabet instead of reading it as a zero nibble;  `add`, `sub`, `mul`, `cmp`, `equal`, `bits`, `mod_red` by quotient-estimate subtraction and `mod_pow` by LSB-first square-and-multiply, both VARIABLE-TIME by design and said so in the unit header, in the mli and in the section 2 threat row;  the ONE division of the unit lives in the total helper `div_pos`, whose callers consume its option;  `harness/diff_limbs.py` recomputes every pinned constant with python `pow()` and requires each one to sit inside a CHECK ROW of the suite after the OCaml comments are stripped, with a corrupted twin of the 255-bit result asserted ABSENT so the search is proven to reach the file;  test_limbsx |
 | M17 | hmacx + HKDF-SHA256 (RFC 5869 vectors) + tests |
 | M18 | keccakx: keccak-256 + eth address derivation; Ethereum vectors + independent python keccak in harness + tests |
 | M19 | p256x port: ECDSA-P256/SHA-256 verify, psychic rejects + tests |
@@ -383,6 +391,11 @@ harnesses + model check + correspondence + `zxlint --errors-only` +
 milestone lands BUILT + GATED + MUTATION-CONFIRMED (behavioral mutants;
 KILLED(compile) is vacuous) + REVIEWED before staging. Nothing is
 committed by the assistant.
+
+The python differential harness joins the ladder at M16 (limbs) and
+grows toward M38.  It recomputes what a suite pins, from an
+implementation that shares no code with the unit under test, and the
+gate calls it unconditionally.
 
 Host modules (`curlx`, `fakex`) are exempt from `zxlint` and hold the
 one try-with guard in the repo. They stay out of the `core=` list in

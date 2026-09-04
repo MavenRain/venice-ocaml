@@ -77,3 +77,8 @@
  (name test_clientx)
  (modules test_clientx)
  (libraries venice))
+
+(test
+ (name test_limbsx)
+ (modules test_limbsx)
+ (libraries venice))

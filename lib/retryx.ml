@@ -285,6 +285,11 @@ let decide (p : Policy.t) ~(attempt : int) ~(waited : Delay.t) ~(now : int)
   (* now is taken for the D4 signature; A1 moved every clock-bearing
      conversion into hints_of, so the decision itself is a table. *)
   let (_ : int) = now in
+  (* The wait is computed BEFORE the attempts check and is discarded on
+     the exhausted branch, so the guards below read as one table in the
+     D4 order instead of nesting the backoff inside a live branch. The
+     computation is pure and bounded, so the discarded value costs a
+     fold over at most max_attempts steps. *)
   let wait = wait_for p attempt o in
   match () with
   | () when attempt >= Policy.max_attempts p -> Error Stop.Attempts_exhausted
