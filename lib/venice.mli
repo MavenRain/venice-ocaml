@@ -24,8 +24,15 @@ module Error : sig
     | Wire_invalid of string
     | Transport_failed of string
     | Stream_invalid of string
+    | Transport_unreachable of string
+    | Client_invalid of string
 
   val to_string : t -> string
+  (* M15: Transport_unreachable prints under "unreachable: " and means
+     the transport proved that no request byte reached a server, so a
+     retry of the same request cannot double-bill. Client_invalid
+     prints under "client: " and is always the SDK's own rejection,
+     never a server verdict. *)
 end
 
 module Cursor : sig
@@ -1511,5 +1518,172 @@ module Stream : sig
     (* The bracket. The optional arguments are the SSE machine's own,
        defaults included. The cursor is valid only inside the
        consumer. *)
+  end
+end
+
+(* M15 the session layer: chat, chat_stream and models over a typed
+   bounded retry.
+
+   The retry is a TABLE, not a search. Only three things retry: a 429,
+   a 502/503/504, and a transport failure that proved NO request byte
+   left the host. Everything else is returned as it is, because a
+   re-sent POST that did leave the host can double-bill.
+
+   The wall clock enters through Clock, so a test scripts time and
+   takes no real sleep. Delay is whole milliseconds inside one hour,
+   minted only inside the SDK: a caller reads a delay, it never builds
+   one. *)
+module Delay : sig
+  type t
+  (* whole milliseconds, 0..3_600_000 *)
+
+  val ms : t -> int
+end
+
+module Clock : sig
+  module type S = sig
+    type t
+
+    val now : t -> int
+    (* whole unix seconds *)
+
+    val sleep : t -> Delay.t -> unit
+  end
+
+  module System : sig
+    (* the real clock: gettimeofday and sleepf *)
+    include S
+
+    val make : unit -> t
+  end
+
+  module Fake : sig
+    (* the scripted clock: sleep records the delay and advances now by
+       the delay rounded UP to whole seconds, so a test drives a retry
+       ladder with no real wait *)
+    include S
+
+    val make : ?now:int -> unit -> t
+    (* default now is 1_700_000_000 *)
+
+    val slept : t -> Delay.t list
+    (* every sleep, in call order *)
+  end
+end
+
+module Model_filter : sig
+  (* the "type" query parameter of GET /models. It is ALWAYS sent: All
+     renders "all", so the client never depends on the server's
+     undocumented default for an absent parameter. *)
+  type t =
+    | All
+    | Kind of Model.kind
+end
+
+module Client : sig
+  module Policy : sig
+    (* the four bounded numbers that shape a retry *)
+    type t
+
+    val default : t
+    (* 3 attempts, base 1_000 ms, per-wait cap 30_000 ms, total cap
+       120_000 ms *)
+
+    val none : t
+    (* one attempt: the first obstacle ends the call *)
+
+    val make :
+      ?max_attempts:int ->
+      ?base_ms:int ->
+      ?max_delay_ms:int ->
+      ?max_total_ms:int ->
+      unit ->
+      (t, Error.t) result
+    (* max_attempts 1..8; base_ms 1..60_000; max_delay_ms at least
+       base_ms and at most 600_000; max_total_ms at least max_delay_ms
+       and at most 3_600_000. A rejection names the field. *)
+  end
+
+  module Obstacle : sig
+    (* what made an attempt fail, as a CLOSED sum: only these three
+       retry *)
+    type t =
+      | Rate_limited of Delay.t option  (* the server hint, if any *)
+      | Gateway of int  (* 502, 503 or 504 *)
+      | Unreachable of string  (* the Transport_unreachable payload *)
+  end
+
+  module Attempt : sig
+    (* one retried attempt: the obstacle and the sleep taken before
+       the next send. It carries no body and no key byte. *)
+    type t
+
+    val obstacle : t -> Obstacle.t
+    val slept : t -> Delay.t
+  end
+
+  module Stop : sig
+    (* why the loop stopped. A hint above the per-wait cap STOPS
+       instead of clamping: waiting less than the server asked for
+       burns an attempt on a certain 429. *)
+    type t =
+      | Not_retryable
+      | Attempts_exhausted
+      | Hint_over_cap of Delay.t
+      | Budget_exhausted of Delay.t
+  end
+
+  type error =
+    | Http of
+        { failure : Head.failure;
+          attempts : Attempt.t list;
+          stop : Stop.t }
+    | Failed of
+        { error : Error.t; attempts : Attempt.t list; stop : Stop.t }
+  (* Http is a server verdict that survived the loop; Failed is a
+     transport rejection or the client's own. Both carry the ledger. *)
+
+  type 'a reply =
+    { value : 'a;
+      head : (Head.t, Error.t) result;
+      attempts : Attempt.t list }
+  (* head is Head.of_pairs over the answer that succeeded, run once. A
+     rate-limit block that fails to parse never erases a good body. *)
+
+  module Make (T : Transport.S) (C : Clock.S) : sig
+    type t
+
+    val make :
+      key:Api_key.t ->
+      ?policy:Policy.t ->
+      ?max_body:int ->
+      transport:T.t ->
+      clock:C.t ->
+      unit ->
+      (t, Error.t) result
+    (* Defaults: Policy.default and max_body 16_777_216. max_body
+       outside 1..268_435_456 rejects. The error body of a non-2xx
+       answer has its own 1_048_576 byte cap. *)
+
+    val models :
+      ?filter:Model_filter.t -> t -> (Model.packed list reply, error) result
+
+    val chat : t -> 'c Chat.t -> (Response.t reply, error) result
+    (* The request is built ONCE before the loop, so every retry sends
+       byte-identical bytes. *)
+
+    val chat_stream :
+      t ->
+      'c Chat.t ->
+      (Stream.cursor -> 'a) ->
+      (('a * Stream.outcome) reply, error) result
+    (* stream true, usage included. On a 2xx the media type decides:
+       text/event-stream drives the puller, an absent type streams,
+       and application/json is REFUSED, because the SSE machine
+       ignores every non-data field and the whole answer would vanish
+       behind an empty Complete.
+
+       A Cut or a Failed outcome is a VALUE in the reply, not an
+       error: the consumer already ran and the head was a 2xx. *)
   end
 end

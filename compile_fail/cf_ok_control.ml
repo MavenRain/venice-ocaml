@@ -186,3 +186,24 @@ let accumulated_choices (f : Venice.Sse.Acc.final) : string list =
   List.map
     (fun (c : Venice.Sse.Acc.Choice.t) -> Venice.Sse.Acc.Choice.finish_raw c)
     (Venice.Sse.Acc.choices f)
+
+(* M15 control: the client functor applies over the scripted transport
+   and the scripted clock, the policy window mints a t, and a Delay is
+   READ off an Attempt. Nothing here sends a request. *)
+module Cf = Venice.Client.Make (Venice.Transport.Fake) (Venice.Clock.Fake)
+
+let client (k : Venice.Api_key.t) (t : Venice.Transport.Fake.t) :
+    (Cf.t, Venice.Error.t) result =
+  Cf.make ~key:k ~policy:Venice.Client.Policy.default ~transport:t
+    ~clock:(Venice.Clock.Fake.make ()) ()
+
+let tighter (() : unit) : (Venice.Client.Policy.t, Venice.Error.t) result =
+  Venice.Client.Policy.make ~max_attempts:2 ~base_ms:250 ()
+
+let waited (a : Venice.Client.Attempt.t) : int =
+  Venice.Delay.ms (Venice.Client.Attempt.slept a)
+
+let filtered (c : Cf.t) :
+    (Venice.Model.packed list Venice.Client.reply, Venice.Client.error) result
+    =
+  Cf.models ~filter:(Venice.Model_filter.Kind Venice.Model.Text) c

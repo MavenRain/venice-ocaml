@@ -524,6 +524,47 @@ let reenter_checks : (string * bool) list =
       Int.equal reenter_rep.closes 1 )
   ]
 
+(* M15 (M14 verify residual 2). A read error paired with a close error
+   is the one case where two transport errors reach the driver at
+   once. The driver must still report ONE error, and the CLOSE text
+   must win: close runs after the read and is the last word on the
+   body, so a caller that sees the read text would be told the stream
+   ended for a reason that is no longer the reason the body is gone.
+   The scripted transport cannot fail a read, so this probe fails
+   every read while the script fails the close. *)
+module Read_fail = struct
+  include F
+
+  let read (_ : body) : (string option, E.t) result =
+    Error (E.Transport_failed "read boom")
+end
+
+module Failing = St.Make (Read_fail)
+
+let read_close_rep : rep =
+  Option.fold ~none:no_body
+    ~some:(fun (b : F.body) ->
+      let (pair : string list * St.outcome) = Failing.run b all_markers in
+      let ((ms : string list), (o : St.outcome)) = pair in
+      let (rd : int) = F.reads b in
+      let (cl : int) = F.closes b in
+      { markers = ms; outcome = outcome_text o; reads = rd; closes = cl;
+        body = Some b })
+    (open_body ~close_error:"close boom" [ ev d1 ])
+
+let residual_checks : (string * bool) list =
+  [ ( "residual 2: a read error plus a close error still fails the run",
+      contains read_close_rep.outcome "failed:" );
+    ( "residual 2: the CLOSE error text wins",
+      String.equal read_close_rep.outcome "failed:transport: close boom" );
+    ( "residual 2: the read error text does NOT reach the caller",
+      not (contains read_close_rep.outcome "read boom") );
+    ( "residual 2: the doubly failing body still closes exactly once",
+      Int.equal read_close_rep.closes 1 );
+    ( "residual 2: the failing read yields no chunk",
+      List.equal String.equal read_close_rep.markers [] )
+  ]
+
 let () =
   run
     (List.concat
@@ -533,5 +574,6 @@ let () =
          cursor_checks;
          drain_checks;
          consumer_checks;
-         reenter_checks
+         reenter_checks;
+         residual_checks
        ])

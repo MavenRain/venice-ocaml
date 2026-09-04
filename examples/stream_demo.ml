@@ -1,4 +1,4 @@
-(* M14 direct-style streaming demo.
+(* M15 streaming demo, over the client session layer.
 
    The build compiles this file on every gate run, so the public
    surface stays callable. The gate never RUNS it: it needs an API key
@@ -6,11 +6,18 @@
 
      dune exec examples/stream_demo.exe
 
-   The flow uses the PUBLIC surface only. It reads the model listing,
-   picks one small text model, sends one streaming chat request, and
-   prints each content delta as it arrives. One consumer per run: the
-   cursor is consumed by the iter below, so a second pass over
-   Stream.collect is impossible and is not attempted. *)
+   The flow uses the PUBLIC surface only. It reads the model listing
+   filtered to text models, picks one small model, sends one streaming
+   chat request through Client.chat_stream, and prints each content
+   delta as it arrives. One consumer per run: the cursor is consumed
+   by the iter below, so a second pass over Stream.collect is
+   impossible and is not attempted.
+
+   M15 replaced the hand-rolled status branch of the M14 demo. The
+   client owns the send, the media-type check, the body close and the
+   bounded retry, so this file holds no HTTP status test at all. It
+   prints the attempt count, which is the number of obstacles the
+   client rode over before the answer it returns. *)
 
 open Venice
 
@@ -22,40 +29,78 @@ let fail (r : ('a, Error.t) result) : ('a, string) result =
 let preferred : string list =
   [ "qwen3-4b"; "llama-3.2-3b"; "qwen-2.5-qwq-32b"; "venice-uncensored" ]
 
-let is_text : Model.packed -> bool = function
-  | Model.Pack m ->
-    (match Model.kind m with
-     | Model.Text -> true
-     | Model.Code -> false
-     | Model.Image -> false
-     | Model.Embedding -> false
-     | Model.Tts -> false
-     | Model.Asr -> false
-     | Model.Music -> false
-     | Model.Upscale -> false
-     | Model.Inpaint -> false
-     | Model.Video -> false)
-
 let is_preferred : Model.packed -> bool = function
   | Model.Pack m -> List.exists (String.equal (Model.id m)) preferred
 
-(* Prefer a small published model, else take the first text model the
-   listing offers. *)
+(* Prefer a small published model, else take the first row the listing
+   offers. The listing is already filtered to text models by the
+   query, so no kind test is needed here. *)
 let pick (rows : Model.packed list) : (Model.packed, string) result =
-  let (texts : Model.packed list) = List.filter is_text rows in
   Option.fold
     ~none:(Error "the listing offers no text model")
     ~some:(fun (p : Model.packed) -> Ok p)
     (Option.fold
-       ~none:(List.nth_opt texts 0)
+       ~none:(List.nth_opt rows 0)
        ~some:(fun (p : Model.packed) -> Some p)
-       (List.find_opt is_preferred texts))
+       (List.find_opt is_preferred rows))
 
 let outcome_text (o : Stream.outcome) : string =
   match o with
   | Stream.Complete -> "complete"
   | Stream.Cut -> "cut"
   | Stream.Failed e -> "failed: " ^ Error.to_string e
+
+let stop_text (s : Client.Stop.t) : string =
+  match s with
+  | Client.Stop.Not_retryable -> "not retryable"
+  | Client.Stop.Attempts_exhausted -> "attempts exhausted"
+  | Client.Stop.Hint_over_cap d ->
+    "the server asked for " ^ string_of_int (Delay.ms d)
+    ^ " ms, above the per-wait cap"
+  | Client.Stop.Budget_exhausted d ->
+    "the next wait of " ^ string_of_int (Delay.ms d)
+    ^ " ms is over the total budget"
+
+let failure_text (f : Head.failure) : string =
+  match f with
+  | Head.Rate_limited { head = _; head_error = _; body = _; raw = _ } ->
+    "429 rate limited"
+  | Head.Client { status; head = _; head_error = _; body = _; raw = _ } ->
+    string_of_int status ^ " client fault"
+  | Head.Server { status; head = _; head_error = _; body = _; raw = _ } ->
+    string_of_int status ^ " server fault"
+  | Head.Unexpected_status { status; head = _; head_error = _; raw = _ } ->
+    string_of_int status ^ " unexpected status"
+
+(* The ledger reads as one line per attempt the client rode over. It
+   carries no body and no key byte, so printing it is safe. *)
+let attempt_text (a : Client.Attempt.t) : string =
+  let waited = string_of_int (Delay.ms (Client.Attempt.slept a)) in
+  match Client.Attempt.obstacle a with
+  | Client.Obstacle.Rate_limited hint ->
+    "rate limited, hint "
+    ^ Option.fold ~none:"none"
+        ~some:(fun (d : Delay.t) -> string_of_int (Delay.ms d) ^ " ms")
+        hint
+    ^ ", waited " ^ waited ^ " ms"
+  | Client.Obstacle.Gateway status ->
+    "gateway " ^ string_of_int status ^ ", waited " ^ waited ^ " ms"
+  | Client.Obstacle.Unreachable why ->
+    "unreachable (" ^ why ^ "), waited " ^ waited ^ " ms"
+
+let client_error_text (e : Client.error) : string =
+  match e with
+  | Client.Http { failure; attempts; stop } ->
+    failure_text failure ^ " after " ^ string_of_int (List.length attempts)
+    ^ " attempt(s), stopped because " ^ stop_text stop
+  | Client.Failed { error; attempts; stop } ->
+    Error.to_string error ^ " after "
+    ^ string_of_int (List.length attempts)
+    ^ " attempt(s), stopped because " ^ stop_text stop
+
+let served (r : ('a Client.reply, Client.error) result) : ('a, string) result =
+  Result.map_error client_error_text
+    (Result.map (fun (rep : 'a Client.reply) -> rep.value) r)
 
 (* One chunk on the wire, printed the moment it arrives. *)
 let print_delta (x : Sse.Chunk.t) : unit =
@@ -66,67 +111,51 @@ let print_delta (x : Sse.Chunk.t) : unit =
     (Sse.Chunk.choices x);
   flush stdout
 
-let read_body (b : Transport.Curl.body) : (string, string) result =
-  let* text = fail (Transport.Curl.read_all b) in
-  let* (() : unit) = fail (Transport.Curl.close b) in
-  Ok text
+(* The client over the shipped transport and the real wall clock. The
+   demo is the ONE place in the repo that builds a Clock.System: every
+   test drives Clock.Fake, so no suite ever sleeps. *)
+module Session = Client.Make (Transport.Curl) (Clock.System)
 
-let listing (c : Transport.Curl.t) ~(key : Api_key.t) :
-    (Model.packed list, string) result =
-  let* req = fail (Http.Request.get Http.Route.models) in
-  let* ((head : Http.Wire.head), (body : Transport.Curl.body)) =
-    fail (Transport.Curl.send c ~key req)
-  in
-  let* text = read_body body in
-  match () with
-  | () when Int.equal head.status 200 ->
-    let* j = fail (Json.parse text) in
-    fail (Model.of_listing j)
-  | () ->
-    Error ("GET /models answered " ^ string_of_int head.status ^ ": " ^ text)
-
-(* The streaming call. stream:true asks for SSE and include_usage:true
-   asks for the usage-only final chunk (D10). *)
-let converse (c : Transport.Curl.t) ~(key : Api_key.t) (p : Model.packed) :
-    (unit, string) result =
+let converse (c : Session.t) (p : Model.packed) : (unit, string) result =
   match p with
   | Model.Pack m ->
     let* msg = fail (Msg.user_text "Say hello in five words.") in
     let* msgs = fail (Msg.nonempty [ msg ]) in
     let* chat = fail (Chat.make m msgs ()) in
-    let* req =
-      fail
-        (Http.Request.post Http.Route.chat_completions
-           ~body:(Chat.to_json ~stream:true ~include_usage:true chat))
+    let (answer : ((unit * Stream.outcome) Client.reply, Client.error) result)
+        =
+      Session.chat_stream c chat (fun (cur : Stream.cursor) ->
+          Stream.iter cur print_delta)
     in
-    let* ((head : Http.Wire.head), (body : Transport.Curl.body)) =
-      fail (Transport.Curl.send c ~key req)
-    in
-    (match () with
-     | () when Int.equal head.status 200 ->
-       let module Drive = Stream.Make (Transport.Curl) in
-       let (pair : unit * Stream.outcome) =
-         Drive.run body (fun (cur : Stream.cursor) ->
-             Stream.iter cur print_delta)
-       in
-       let (((() : unit)), (o : Stream.outcome)) = pair in
-       print_newline ();
-       print_endline ("model: " ^ Model.id m);
-       print_endline ("outcome: " ^ outcome_text o);
-       Ok ()
-     | () ->
-       let* text = read_body body in
-       Error
-         ("POST /chat/completions answered "
-          ^ string_of_int head.status
-          ^ ": " ^ text))
+    Result.fold
+      ~ok:(fun (rep : (unit * Stream.outcome) Client.reply) ->
+        let (((() : unit)), (o : Stream.outcome)) = rep.value in
+        print_newline ();
+        print_endline ("model: " ^ Model.id m);
+        print_endline ("outcome: " ^ outcome_text o);
+        print_endline
+          ("attempts before the answer: "
+           ^ string_of_int (List.length rep.attempts));
+        List.iter
+          (fun (a : Client.Attempt.t) ->
+            print_endline ("  retried: " ^ attempt_text a))
+          rep.attempts;
+        Ok ())
+      ~error:(fun (e : Client.error) -> Error (client_error_text e))
+      answer
 
 let demo (() : unit) : (unit, string) result =
   let* key = fail (Api_key.from_env ()) in
-  let* c = fail (Transport.Curl.make ()) in
-  let* rows = listing c ~key in
+  let* transport = fail (Transport.Curl.make ()) in
+  let* c =
+    fail
+      (Session.make ~key ~transport ~clock:(Clock.System.make ()) ())
+  in
+  let* rows =
+    served (Session.models ~filter:(Model_filter.Kind Model.Text) c)
+  in
   let* p = pick rows in
-  converse c ~key p
+  converse c p
 
 let () =
   Result.fold

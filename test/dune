@@ -67,3 +67,13 @@
  (name test_curlx)
  (modules test_curlx)
  (libraries venice unix))
+
+(test
+ (name test_retryx)
+ (modules test_retryx)
+ (libraries venice))
+
+(test
+ (name test_clientx)
+ (modules test_clientx)
+ (libraries venice))

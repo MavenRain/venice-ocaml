@@ -218,6 +218,36 @@ let kind_of_string (ctx : string) (s : string) : (kind, Errx.t) result =
   | "video" -> Ok Video
   | other -> invalid (ctx ^ ".type: unknown value " ^ other)
 
+(* M15 D8: the inverse of kind_of_string, one arm per constructor and
+   no wildcard, so a new kind cannot silently render as an old slug.
+   The two tables are one to one. *)
+let kind_slug (k : kind) : string =
+  match k with
+  | Text -> "text"
+  | Code -> "code"
+  | Image -> "image"
+  | Embedding -> "embedding"
+  | Tts -> "tts"
+  | Asr -> "asr"
+  | Music -> "music"
+  | Upscale -> "upscale"
+  | Inpaint -> "inpaint"
+  | Video -> "video"
+
+module Model_filter = struct
+  (* M15 A6: the "type" query parameter, always sent. All renders
+     "all"; the absent-parameter server default is UNPINNED, so the
+     client never depends on it. *)
+  type t =
+    | All
+    | Kind of kind
+
+  let slug (t : t) : string =
+    match t with
+    | All -> "all"
+    | Kind k -> kind_slug k
+end
+
 let privacy_of_string (ctx : string) (s : string) :
     (privacy, Errx.t) result =
   match s with

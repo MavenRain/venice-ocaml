@@ -5,7 +5,8 @@
    M8 the response-header domain, M9 the chat request domain, M10 the
    chat response domain, M11 the SSE stream and chunk domains, M13
    the key, request, wire-head and transport domains, M14 the stream
-   accumulator domain. *)
+   accumulator domain, M15 the never-sent transport failure and the
+   client's own rejections. *)
 
 type t =
   | Hex_invalid of string
@@ -24,6 +25,13 @@ type t =
   | Wire_invalid of string
   | Transport_failed of string
   | Stream_invalid of string
+  (* M15 D9: the transport proved that NO request byte reached a
+     Venice server, so a retry of the same request cannot double-bill.
+     Every other transport rejection stays Transport_failed. *)
+  | Transport_unreachable of string
+  (* M15 D9: the client's own rejection (a policy or body window, a
+     media type, the total classify arm), never a server verdict. *)
+  | Client_invalid of string
 
 let to_string (e : t) : string =
   match e with
@@ -43,3 +51,5 @@ let to_string (e : t) : string =
   | Wire_invalid s -> "wire: " ^ s
   | Transport_failed s -> "transport: " ^ s
   | Stream_invalid s -> "stream: " ^ s
+  | Transport_unreachable s -> "unreachable: " ^ s
+  | Client_invalid s -> "client: " ^ s

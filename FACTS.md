@@ -40,6 +40,69 @@ live probe confirms it (M2 pins the probe fixtures). Re-verify on SDK bumps.
   renewing daily; minted by locking sVVV. "VCU" is the legacy name for the
   staking-derived inference unit; the API surfaces Diem + USD.
 
+## Retry
+- Landed at M15: a bounded retry loop over a clock boundary.
+  `Venice.Client` retries a request only for a closed set of
+  obstacles:  a never-sent transport failure, a 429, and the three
+  gateway statuses 502, 503 and 504.  The caps (attempts, per-wait
+  delay, total waiting time) are policy fields, so the loop is bounded
+  by construction and not by a timeout.
+- The rate-limit hint comes from the sextet above.  On a 429 the
+  client reads the reset field of each EXHAUSTED triple, converts it
+  to milliseconds, and waits the larger of the two.  A
+  `x-ratelimit-reset-requests` value is a unix timestamp, so the delay
+  is that value minus the clock now;  a `x-ratelimit-reset-tokens`
+  value is already a duration in seconds.
+- `retry-after` is read in its delay-seconds form only (RFC 7231
+  section 7.1.3, ASCII digits).  The HTTP-date form is ignored, so a
+  server that sends only a date reads as no hint and the client falls
+  back to its own backoff.
+- OPEN FACTS (pin at the M2 probe).  The M15 client assumes each one
+  below, so a capture that refutes one is a client correction and not
+  a new module.
+  - M15 W1 states that a 2xx answer to POST /chat/completions with
+    `stream:false`, and to GET /models, carries `content-type:
+    application/json`, with an optional `; charset=utf-8` parameter.
+    A 2xx with another media type refutes it.  M15 accepts a subtype
+    of `json` or a `+json` structured suffix, and accepts an ABSENT
+    content-type;  a present-and-wrong type is rejected as
+    `Errx.Client_invalid`.
+  - M15 W2 states that a 2xx answer to a `stream:true` request carries
+    `content-type: text/event-stream`.  The swagger says
+    application/json only, so this hypothesis has a documented
+    CONTRADICTION on the wire.  M15 therefore fails closed:
+    text/event-stream streams, `application/json` on the stream path
+    is REFUSED rather than parsed as one silent empty stream, and any
+    third media type is rejected.  A capture of a JSON-bodied stream
+    answer refutes it.
+  - M15 W3 states that a 429 carries the sextet and that the
+    exhausted triple reports `remaining` = 0.  A 429 whose exhausted
+    triple has `remaining` > 0, or whose only hint is an HTTP-date
+    `retry-after`, refutes it.  A 429 with no usable hint still
+    retries on the client's own backoff.
+  - M15 W4 states that 502, 503 and 504 are transient gateway answers:
+    no completion was produced and no credit was charged.  500 and
+    every other 5xx may have executed the request, so M15 does NOT
+    retry them.  Venice documentation or a capture that charges for a
+    503 refutes it.
+  - M15 W5 states that curl exit 6 (DNS), 7 (connect) and 35 (TLS
+    handshake) prove that no request byte reached a Venice server.
+    Those three exits alone map to `Errx.Transport_unreachable` and
+    alone allow a POST re-send.  Exit 28 (timeout) and exit 56 (recv
+    failure) stay `Errx.Transport_failed` and never retry, because the
+    timeout can strike after the request went out.  The curl man page
+    or CURL.md saying that any of 6, 7 or 35 can fire after request
+    bytes went out refutes it.
+- Runtime fact (not a Venice fact, recorded here because the retry
+  loop rests on it):  `Unix.sleepf` loops its own `nanosleep` on
+  EINTR and rejects only an invalid duration, and `Unix.gettimeofday`
+  does not fail.  The installed `unix.mli` is SILENT on both points,
+  so the fact is read from the runtime source.  M15 adds no try-with;
+  the repo keeps ONE guard, in curlx.
+- The `/models` query parameter `type` is ALWAYS sent by M15, so the
+  client never depends on the server default.  That default is
+  UNPINNED:  no Venice page states what an absent `type` means.
+
 ## Model object (`/models`)
 - `id`, `type`, `created`, `name`, `description`, `modelSource`, `offline`,
   `traits` (strings), `uncensored?`, `discount_to_user?`.

@@ -1,8 +1,16 @@
 (* M13 fakex: the scripted transport. HOST unit: the script cursor,
    the recorded requests and the per-body chunk cursor are refs. *)
 
-type exchange =
+type answer =
   { head_bytes : string; chunks : string list; close_error : string option }
+
+(* M15 D10: a script slot is either a scripted ANSWER or a scripted
+   REFUSAL. A refusal records the request and hands the error back, so
+   an end-to-end suite can script a transport failure between two
+   answers without a second transport. *)
+type exchange =
+  | Answer of answer
+  | Refusal of Errx.t
 
 type t = { script : exchange list ref; recorded : Httpx.Request.t list ref }
 
@@ -20,7 +28,9 @@ let read_all_cap (() : unit) : int = 8_388_608
 
 let exchange ~(head : string) ~(chunks : string list)
     ?(close_error : string option) (() : unit) : exchange =
-  { head_bytes = head; chunks; close_error }
+  Answer { head_bytes = head; chunks; close_error }
+
+let refusal (e : Errx.t) : exchange = Refusal e
 
 let make (script : exchange list) : t =
   { script = ref script; recorded = ref [] }
@@ -55,16 +65,23 @@ let send (t : t) ~(key : Keyx.t) (req : Httpx.Request.t) :
     (Wirex.head * body, Errx.t) result =
   let (_ : Keyx.t) = key in
   Result.bind (pop t) (fun (e : exchange) ->
-      Result.map
-        (fun ((h : Wirex.head), (rest : string)) ->
-          t.recorded := req :: !(t.recorded);
-          ( h,
-            { pending = ref (List.append (leading rest) e.chunks);
-              scripted_error = e.close_error;
-              closed = ref false;
-              reads = ref 0;
-              closes = ref 0 } ))
-        (parse_head e.head_bytes))
+      match e with
+      | Refusal err ->
+        (* The request still counts: requests lists every send, refused
+           or not, so a retry ledger can be read off it. *)
+        t.recorded := req :: !(t.recorded);
+        Error err
+      | Answer a ->
+        Result.map
+          (fun ((h : Wirex.head), (rest : string)) ->
+            t.recorded := req :: !(t.recorded);
+            ( h,
+              { pending = ref (List.append (leading rest) a.chunks);
+                scripted_error = a.close_error;
+                closed = ref false;
+                reads = ref 0;
+                closes = ref 0 } ))
+          (parse_head a.head_bytes))
 
 let read (b : body) : (string option, Errx.t) result =
   b.reads := !(b.reads) + 1;

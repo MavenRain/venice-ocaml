@@ -59,12 +59,14 @@ the version probe and the two-pipe IO trap) is in `CURL.md`.
 | Deprecation surprise | slug dies under you | `model_spec.deprecation` parsed to a variant and surfaced |
 | Malformed stream | SSE smuggling, unbounded buffers | strict incremental SSE machine, bounded buffers, total |
 | Secret leak in logs | API key / session key in traces | redaction at the transport boundary; zeroization sweep at M37 |
+| Retry storm / double bill | naive retry of a POST after a timeout | closed `Obstacle` sum: only never-sent transport failures, 429 and the three gateway statuses retry;  attempts, per-wait and total caps are policy fields;  a server hint above the cap stops instead of clamping |
 
 ## 3. API shape (lib/)
 
 Root module `venice.ml` / `venice.mli` is the only public signature.
 Internal units are x-suffixed (errx bytesx hexx b64x jsonx modelx paramsx
-msgx headx ssex accx keyx httpx cfgx wirex curlx fakex limbsx hmacx keccakx
+msgx headx ssex accx keyx httpx cfgx wirex curlx fakex retryx clockx
+limbsx hmacx keccakx
 p256x secpx aesx gcmx quotex sigx derx attestx sessx clientx streamx),
 hidden behind it.
 
@@ -176,6 +178,77 @@ module Stream : sig                       (* host layer: the ONE handler *)
       T.body -> (cursor -> 'a) -> 'a * outcome
   end
 end
+
+module Delay : sig                        (* core: 0 .. 3_600_000 ms *)
+  type t                                  (* minted, never negative *)
+  val ms : t -> int
+end
+
+module Clock : sig                        (* host layer: the ONE wall clock *)
+  module type S = sig
+    type t
+    val now : t -> int                    (* unix seconds *)
+    val sleep : t -> Delay.t -> unit
+  end
+  module System : sig include S val make : unit -> t end
+  module Fake : sig
+    include S
+    val make : ?now:int -> unit -> t
+    val slept : t -> Delay.t list         (* the waits, in order *)
+  end
+end
+
+module Model_filter : sig
+  type t = All | Kind of Model.kind       (* renders the `type` query *)
+end
+
+module Client : sig                       (* host layer: the retry loop *)
+  module Policy : sig
+    type t                                (* attempts, base, per-wait, total *)
+    val default : t
+    val none : t                          (* one attempt, no wait *)
+    val make :
+      ?max_attempts:int -> ?base_ms:int -> ?max_delay_ms:int ->
+      ?max_total_ms:int -> unit -> (t, Error.t) result
+  end
+  module Obstacle : sig
+    type t =                              (* the CLOSED retryable set *)
+      | Rate_limited of Delay.t option
+      | Gateway of int                    (* 502, 503, 504 only *)
+      | Unreachable of string             (* never-sent transport failure *)
+  end
+  module Stop : sig
+    type t =
+      | Not_retryable
+      | Attempts_exhausted
+      | Hint_over_cap of Delay.t
+      | Budget_exhausted of Delay.t
+  end
+  module Attempt : sig
+    type t                                (* one ledger row *)
+    val obstacle : t -> Obstacle.t
+    val slept : t -> Delay.t
+  end
+  type error =
+    | Http of { failure : Head.failure; attempts : Attempt.t list;
+                stop : Stop.t }
+    | Failed of { error : Error.t; attempts : Attempt.t list; stop : Stop.t }
+  type 'a reply =
+    { value : 'a; head : (Head.t, Error.t) result;
+      attempts : Attempt.t list }
+  module Make (T : Transport.S) (C : Clock.S) : sig
+    type t
+    val make :
+      key:Api_key.t -> ?policy:Policy.t -> ?max_body:int ->
+      transport:T.t -> clock:C.t -> unit -> (t, Error.t) result
+    val models :
+      ?filter:Model_filter.t -> t -> (Model.packed list reply, error) result
+    val chat : t -> 'c Chat.t -> (Response.t reply, error) result
+    val chat_stream :
+      t -> 'c Chat.t -> (Stream.cursor -> 'a) ->
+      (('a * Stream.outcome) reply, error) result
+  end
+end
 ```
 
 ## 4. Dependencies
@@ -199,6 +272,11 @@ processes, pipes and `select`. `venice_ocaml.opam` needs no new depend,
 because `unix` ships with OCaml >= 5.1. That is a decision, not a gap:
 an opam depend on `unix` would pin a package that the compiler already
 provides.
+
+M15 adds no depend either.  The host clock links that same `unix` for
+`gettimeofday` and `sleepf`, the retry table itself is pure core, and
+the client drives a transport and a clock through their signatures
+only.
 
 The M14 units add no depend either.  Effect handlers ship inside the
 OCaml 5 compiler, so `streamx` needs no library for the one handler.
@@ -265,7 +343,7 @@ plus a full-edge differential sweep (x402-caml conformance pattern).
 | **C: transport + effects** | |
 | M13 | transport boundary: `keyx` (opaque API key, no published projection), `httpx` (Endpoint, phantom-indexed Route, Request mint with percent-encoded query and a reserved-header table), `cfgx` (the pure curl config renderer, the ONE place the key becomes bytes), `wirex` (incremental head reader, CRLF or bare LF per line, 1xx skipping), `curlx` (curl subprocess over raw fds and `Unix.select`, version probe, config-line cap, stderr ring, key redaction) and `fakex` (scripted twin) behind `Venice.Transport.S`;  test_transport + test_curlx |
 | M14 | streamx: a PULL cursor over the M11 SSE machine and the M13 transport boundary, with ONE `Effect.Deep.try_with` per run, ONE state ref and one sealed `Delta` effect;  `Stream.Make (T).run` is a bracket that closes the body exactly once and poisons the cursor on every exit path, the consumer included, and the post-[DONE] drain is bounded;  `next`, `iter`, `fold` and `collect` are transport-independent;  accx: the pure cross-chunk accumulator that folds the M11 chunks (tool_call fragments into `Msgx.Tool_call` included) into one chat.completion document and re-parses it with `Respx.of_string`, so the streaming and the non-streaming path share ONE grammar;  `Venice.Sse.Acc` plus `Venice.Stream` in venice.mli, `Chat.to_json` promoted for a streaming request body, `Errx.Stream_invalid`, the `Ssex.Chunk.usage_raw` seam, fakex read and close counters, `examples/stream_demo.ml`, test_accx + test_streamx + cf_n |
-| M15 | clientx: chat, chat_stream, models; bounded typed retry/backoff honoring reset headers; fake-transport e2e + tests |
+| M15 | clientx: the session layer as `Client.Make (T : Transport.S) (C : Clock.S)`, with `models`, `chat` and `chat_stream` over ONE request built before the loop, so every retry re-sends byte-identical bytes;  the answer is read under a `max_body` cap, a non-2xx keeps its STATUS even when the error body or the close fails, and a 2xx lets a close failure win, because a body that did not close cleanly is not a body that arrived;  retryx: the pure decide table, the doubling backoff, the rate-limit hint folding (the exhausted triple, `retry-after` in seconds, the larger of the two) and the `Policy` window over attempts, base delay, per-wait cap and total budget;  clockx: the `System` and `Fake` wall-clock boundary, so no suite sleeps and no test builds a `System`;  the closed `Obstacle` sum (never-sent transport failure, 429, and 502/503/504 alone) and the closed `Stop` sum, with a server hint above the per-wait cap STOPPING instead of clamping;  `Venice.Delay`, `Venice.Clock`, `Venice.Model_filter` and `Venice.Client` in venice.mli, the M14 drift guard now covering both dependents of the streamx transport copy;  `Errx.Transport_unreachable` for the curl exits that prove no request byte went out (6, 7, 35) and `Errx.Client_invalid` for the client's own rejections;  `Modelx.kind_slug` plus `Model_filter`, so the `type` query parameter is ALWAYS sent and the server default is never relied on;  `Fakex.refusal`, a script slot that rejects the send and still records the request;  the rewritten `examples/stream_demo.ml` over `Client.Make (Transport.Curl) (Clock.System)`;  test_retryx + test_clientx + cf_o |
 | **D: crypto tower (core subset)** | |
 | M16 | limbsx port + modexp + tests |
 | M17 | hmacx + HKDF-SHA256 (RFC 5869 vectors) + tests |

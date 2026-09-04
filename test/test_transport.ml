@@ -858,7 +858,45 @@ let fake_checks : (string * bool) list =
       List.length (F.requests (F.make [])) = 0 )
   ]
 
+(* M15 D10: a refusal slot rejects the send and STILL records the
+   request.  That is what lets ONE Fake script a never-sent transport
+   failure followed by the answer the retry gets, without a second
+   transport and without a mutable hook in the test.
+
+   The three sends are separate top-level lets on purpose: the script
+   is stateful and OCaml evaluates list elements right to left, so a
+   check list that sent inline would consume the slots backwards. *)
+let refusal_script : F.t =
+  F.make
+    [ F.refusal (E.Transport_unreachable "curl exit 6 (dns): no such host");
+      F.exchange ~head:ok_head ~chunks:[ "a" ] () ]
+
+let refused : (W.head * F.body, E.t) result = fake_send refusal_script listing
+
+let after_refusal : (W.head * F.body, E.t) result =
+  fake_send refusal_script listing
+
+let refusal_log : H.Request.t list = F.requests refusal_script
+
+let refusal_checks : (string * bool) list =
+  [ ("fake: a refusal slot rejects the send", Result.is_error refused);
+    ( "fake: the refusal carries the scripted error verbatim",
+      err_is "unreachable: curl exit 6 (dns): no such host" refused );
+    ( "fake: the slot AFTER a refusal still answers",
+      with_wire_head after_refusal (fun (h : W.head) -> h.W.status = 200) );
+    ( "fake: a refused send is still recorded in the request log",
+      Int.equal (List.length refusal_log) 2 );
+    ( "fake: the refused request is the FIRST row of the log",
+      match refusal_log with
+      | [] -> false
+      | r :: (_ : H.Request.t list) ->
+        String.equal (H.Request.path r) "/models" );
+    ( "fake: the refusal consumed exactly one slot",
+      Result.is_error (fake_send refusal_script listing) )
+  ]
+
 let () =
   run
     (key_checks @ endpoint_checks @ route_checks @ reserved_checks
-   @ request_checks @ cfg_checks @ wire_checks @ fake_checks)
+   @ request_checks @ cfg_checks @ wire_checks @ fake_checks
+   @ refusal_checks)

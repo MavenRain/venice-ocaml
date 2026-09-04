@@ -73,13 +73,34 @@ module Transport = struct
   module Fake = Fakex
 end
 
+(* M15: the retry satellites are hoisted ahead of Client, on the
+   Reset_at/Requests_limit precedent above. Delay, Policy, Obstacle,
+   Stop and Attempt are DEFINED in retryx (core, pure); clientx owns
+   only the error, the reply and the functor, so the two units cannot
+   form a dune cycle. *)
+module Delay = Retryx.Delay
+module Clock = Clockx
+module Model_filter = Modelx.Model_filter
+
+module Client = struct
+  include Clientx
+  module Policy = Retryx.Policy
+  module Obstacle = Retryx.Obstacle
+  module Attempt = Retryx.Attempt
+  module Stop = Retryx.Stop
+end
+
 (* M14 drift guard (A6). streamx carries its OWN copy of the
    transport signature, because naming Venice.Transport.S inside
    streamx.ml would make venice depend on a module that depends on
    venice. This functor application compiles ONLY while every
    Transport.S is a Streamx.S, so the day the two signatures part the
    build fails here instead of at a call site. It is applied to no
-   argument and emits no code. *)
+   argument and emits no code.
+
+   M15: clientx is the second dependent of that copy, since
+   Clientx.Make takes a Streamx.S while venice.mli spells the same
+   functor over Transport.S; one guard covers both. *)
 module _ (T : Streamx.S) = struct
   module _ : Transport.S = T
 end

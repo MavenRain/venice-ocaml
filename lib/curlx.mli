@@ -78,11 +78,18 @@ val close : body -> (unit, Errx.t) result
    channels, because a second close_process_full raises EBADF.
 
    After EOF: drain stderr, reap, and map the status. WEXITED 0 is Ok;
-   any other status is Transport_failed carrying the redacted stderr
-   tail, with a short meaning appended for the documented exit codes
-   (6 dns, 7 connect, 23 write error, 26 config rejected, 28 timeout,
-   35 tls handshake, 52 empty reply, 56 recv failure, 60 certificate
-   verify).
+   any other status carries the redacted stderr tail, with a short
+   meaning appended for the documented exit codes (6 dns, 7 connect,
+   23 write error, 26 config rejected, 28 timeout, 35 tls handshake,
+   52 empty reply, 56 recv failure, 60 certificate verify).
+
+   M15 D9: exit 6, exit 7 and exit 35 are Transport_unreachable,
+   because they fire before any request byte can leave and a retry of
+   the same request therefore cannot double-bill. Every other nonzero
+   status, a signal death and a spawn failure alike, stays
+   Transport_failed. Exit 28 and exit 56 stay Transport_failed on
+   purpose: a timeout or a reset can strike AFTER the request went
+   out.
 
    Before EOF (caller-initiated early close): SIGTERM (ESRCH
    ignored), drain, reap, and return Ok whatever the status. Exit 23

@@ -47,7 +47,8 @@ let detail (e : Errx.t) : string =
   | Errx.Model_invalid _ | Errx.Param_invalid _ | Errx.Msg_invalid _
   | Errx.Head_invalid _ | Errx.Chat_invalid _ | Errx.Resp_invalid _
   | Errx.Sse_invalid _ | Errx.Chunk_invalid _ | Errx.Key_invalid _
-  | Errx.Req_invalid _ | Errx.Wire_invalid _ | Errx.Stream_invalid _ ->
+  | Errx.Req_invalid _ | Errx.Wire_invalid _ | Errx.Stream_invalid _
+  | Errx.Transport_unreachable _ | Errx.Client_invalid _ ->
     Errx.to_string e
 
 let transport (msg : string) : ('a, Errx.t) result =
@@ -301,12 +302,27 @@ let meaning (n : int) : string =
   | 60 -> " (certificate verify failed)"
   | _ -> ""
 
+(* M15 D9/W5: exits 6 (dns), 7 (connect) and 35 (tls handshake) fire
+   BEFORE any request byte can leave, so a retry of the same request
+   cannot double-bill. Exit 28 (timeout) and exit 56 (recv failure)
+   prove nothing of the kind: either can strike after the request went
+   out. Every other nonzero status stays Transport_failed. *)
+let never_sent (n : int) : bool =
+  match n with
+  | 6 -> true
+  | 7 -> true
+  | 35 -> true
+  | _ -> false
+
 let exit_result (tail : string) (st : Unix.process_status) :
     (unit, Errx.t) result =
   match st with
   | Unix.WEXITED 0 -> Ok ()
   | Unix.WEXITED n ->
-    transport ("curl exit " ^ string_of_int n ^ meaning n ^ ": " ^ tail)
+    let text = "curl exit " ^ string_of_int n ^ meaning n ^ ": " ^ tail in
+    (match never_sent n with
+     | true -> Error (Errx.Transport_unreachable text)
+     | false -> Error (Errx.Transport_failed text))
   | Unix.WSIGNALED s ->
     transport ("curl killed by signal " ^ signal_name s ^ ": " ^ tail)
   | Unix.WSTOPPED s -> transport ("curl stopped by signal " ^ signal_name s)

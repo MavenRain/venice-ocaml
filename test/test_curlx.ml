@@ -100,6 +100,7 @@ let bin_820 : string = fake "curl_8.2.0"
 let bin_garbage : string = fake "curl_garbage"
 let bin_exit28 : string = fake "curl_exit28"
 let bin_leak : string = fake "curl_leak"
+let bin_exit35 : string = fake "curl_exit35"
 let bin_bigerr : string = fake "curl_bigerr"
 let bin_bigerr0 : string = fake "curl_bigerr0"
 let bin_slow : string = fake "curl_slow"
@@ -295,6 +296,11 @@ let leak_close : (unit, E.t) result = drain_then_close bin_leak
 let bigerr_body : string = body_text bin_bigerr
 let bigerr_close : (unit, E.t) result = drain_then_close bin_bigerr
 
+(* M15 D9: exit 35 joins 6 and 7 in the never-sent set.  The fake is
+   the curl_leak pattern with the TLS exit, so the case costs one
+   script and no new driver. *)
+let exit35_close : (unit, E.t) result = drain_then_close bin_exit35
+
 (* M14 A17 (D17 residual 2): the exit-0 twin of curl_bigerr.  The
    shipped bigerr fake exits 7, so the exit-0 path behind a FULL
    stderr pipe rested on exit_result alone.  close maps WEXITED 0 to
@@ -321,8 +327,14 @@ let failure_checks : (string * bool) list =
       err_has exit28 "(timeout: operation timed out)" );
     ( "exit: the stderr tail reaches the message",
       err_has exit28 "Operation timed out" );
+    ( "exit: 28 stays a plain transport failure, since the request WAS sent",
+      err_has exit28 "transport: curl exit 28" );
     ( "exit: 6 carries the dns meaning",
       err_has leak_close "(dns: could not resolve host)" );
+    ( "M15 D9: exit 6 is never-sent, so it reports unreachable",
+      err_has leak_close "unreachable: curl exit 6" );
+    ( "M15 D9: exit 6 is NOT the plain transport failure any more",
+      not (contains (err_text leak_close) "transport: curl exit 6") );
     ( "exit: the key is redacted out of the stderr tail",
       err_has leak_close "[redacted]" );
     ( "exit: the key itself never reaches the message",
@@ -332,6 +344,14 @@ let failure_checks : (string * bool) list =
     ("stderr: the exit still reaches close", err_has bigerr_close "curl exit 7");
     ( "stderr: 7 carries the connect meaning",
       err_has bigerr_close "(connect: failed to connect to host)" );
+    ( "M15 D9: exit 7 is never-sent, so it reports unreachable",
+      err_has bigerr_close "unreachable: curl exit 7" );
+    ( "M15 D9: exit 35 is never-sent, so it reports unreachable",
+      err_has exit35_close "unreachable: curl exit 35" );
+    ( "M15 D9: exit 35 carries the tls meaning",
+      err_has exit35_close "(tls handshake failed)" );
+    ( "M15 D9: exit 35 keeps the stderr tail",
+      contains (err_text exit35_close) "TLS connect error" );
     ( "stderr: only the tail is kept",
       String.length (err_text bigerr_close) < 5000 );
     ( "stderr: the tail holds stderr bytes",

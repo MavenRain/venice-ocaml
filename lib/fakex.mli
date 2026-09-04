@@ -24,6 +24,13 @@ val exchange :
    read in order. close_error makes close reject with that text under
    the "transport: " prefix. *)
 
+val refusal : Errx.t -> exchange
+(* M15 D10: a script slot whose send RECORDS the request and then
+   rejects with that error. It scripts a transport failure without a
+   second transport, so one Fake.make can hold
+   [refusal (Transport_unreachable "..."); exchange 429; exchange 200]
+   and the retry ledger reads off requests. *)
+
 val make : exchange list -> t
 (* the script, in send order *)
 
