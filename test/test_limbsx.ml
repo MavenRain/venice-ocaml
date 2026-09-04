@@ -98,14 +98,15 @@ let b_mul : L.t =
 let prod : L.t = L.mul a_mul b_mul
 let prod_red : L.t option = L.mod_red ~m:p256 prod
 
-(* A maximal borrow chain: every limb of the minuend below the top is
-   zero, so the subtraction borrows through all sixteen limbs, pin
-   (e). *)
+(* A borrow chain the difference itself shows, pin (e): the subtrahend
+   is nonzero in its low FIVE limbs, so 15 of the 16 limbs borrow out
+   and the chain stays visible in four fffe limbs of the difference
+   instead of in a single trailing limb. *)
 let a_sub : L.t =
   hx "8000000000000000000000000000000000000000000000000000000000000000"
 
 let b_sub : L.t =
-  hx "0000000000000000000000000000000000000000000000000000000000000001"
+  hx "0000000000000000000000000000000000000000000000010001000100010001"
 
 let diff : L.t option = L.sub a_sub b_sub
 
@@ -384,12 +385,12 @@ let pin_checks : (string * bool) list =
     ( "limbsx: pin e, the subtrahend text",
       opt_eq
         (L.of_hex
-           "0000000000000000000000000000000000000000000000000000000000000001")
+           "0000000000000000000000000000000000000000000000010001000100010001")
         (Some b_sub) );
     ( "limbsx: pin e, the borrow chain runs through every limb",
       opt_eq diff
         (L.of_hex
-           "7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")
+           "7ffffffffffffffffffffffffffffffffffffffffffffffefffefffefffeffff")
     );
     ( "limbsx: pin e, adding the subtrahend back gives the minuend",
       opt_eq (Option.map (fun (d : L.t) -> L.add d b_sub) diff) (Some a_sub) )

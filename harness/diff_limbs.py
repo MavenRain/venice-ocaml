@@ -171,9 +171,14 @@ pin(
 # ---------- pin (e): a borrow chain through every limb ----------
 
 a_sub = 2**255
-b_sub = 1
+b_sub = int("0000000000000000000000000000000000000000000000010001000100010001", 16)
 diff = a_sub - b_sub
-require("pin e", a_sub % 65536 < b_sub % 65536 and diff + b_sub == a_sub)
+require(
+    "pin e",
+    diff + b_sub == a_sub
+    and sum(1 for i in range(16) if (b_sub >> (16 * i)) & 0xFFFF) == 5
+    and ((diff >> 16) & 0xFFFF) == 0xFFFE,
+)
 pin("pin e 256-bit borrow chain", [hex256(a_sub), hex256(b_sub), hex256(diff)])
 
 # ---------- the negative control ----------

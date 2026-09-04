@@ -92,3 +92,8 @@
  (name test_keccakx)
  (modules test_keccakx)
  (libraries venice))
+
+(test
+ (name test_p256x)
+ (modules test_p256x)
+ (libraries venice))

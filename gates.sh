@@ -10,7 +10,7 @@ cd "$here"
 dunecho build
 
 # Test suites; grows one entry per milestone that lands a suite.
-suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx test_hmacx test_keccakx"
+suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx test_hmacx test_keccakx test_p256x"
 # The capture sits in an if-condition so a failing suite cannot abort
 # the script (set -e) before its output and name reach the log; the
 # FAIL-text case still guards a suite that prints FAIL yet exits 0.
@@ -54,6 +54,12 @@ fi
 # hashlib.sha3_256 (the sha3 self-check line) before it reads a pin.
 "$py" "$here/harness/diff_keccak.py"
 
+# The M19 differential harness over test_p256x.ml. Its P-256 runs in
+# AFFINE coordinates over python integers and shares no formula with the
+# Jacobian unit, and it SIGNS the RFC 6979 vector and re-verifies the
+# result before it reads a pin (the rfc6979 self-check line).
+"$py" "$here/harness/diff_p256.py"
+
 # Model check + correspondence (M35..M37).
 if [ -x "$here/model/check.sh" ]; then
   "$here/model/check.sh"
@@ -89,7 +95,16 @@ fi
 # index arithmetic addresses a lane, and rotl is called only with
 # literal offsets in 1 .. 63, never with 0 or 64. It links nothing new
 # (Int64 is stdlib), so it joins the list after hmacx.ml.
-core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml hmacx.ml keccakx.ml"
+# p256x.ml is the FOURTH crypto-tower module (M19): pure and sans-io in
+# the same shape, no Bytes, no Buffer, no Array, no reference cell, no
+# division line and no remainder either, because every reduction goes
+# through the limbsx mod_red helper and every inverse through the limbsx
+# mod_pow helper, so the modulus is always an explicit argument. The
+# seven curve constants and the four small multipliers of the Jacobian
+# formulas are carried as a record PARAMETER, so no helper reads a
+# top-level constant under trap 2. It links nothing new, because sha2
+# arrived at M17, so it joins the list after keccakx.ml.
+core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml hmacx.ml keccakx.ml p256x.ml"
 if [ -n "$core" ]; then
   # The list is echoed so the gate LOG proves which modules zxlint
   # covered; zxlint itself prints only a verdict.

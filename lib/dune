@@ -2,6 +2,6 @@
  (name venice)
  (public_name venice_ocaml)
  (libraries unix sha2)
- (modules venice errx bytesx hexx limbsx hmacx keccakx b64x jsonx paramsx modelx msgx headx
+ (modules venice errx bytesx hexx limbsx hmacx keccakx p256x b64x jsonx paramsx modelx msgx headx
    chatx respx ssex accx streamx keyx httpx cfgx wirex curlx fakex retryx
    clockx clientx))
