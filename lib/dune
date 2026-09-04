@@ -1,7 +1,7 @@
 (library
  (name venice)
  (public_name venice_ocaml)
- (libraries unix)
- (modules venice errx bytesx hexx limbsx b64x jsonx paramsx modelx msgx headx
+ (libraries unix sha2)
+ (modules venice errx bytesx hexx limbsx hmacx b64x jsonx paramsx modelx msgx headx
    chatx respx ssex accx streamx keyx httpx cfgx wirex curlx fakex retryx
    clockx clientx))

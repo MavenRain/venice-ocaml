@@ -598,6 +598,44 @@ let s_stream_json_read : answer =
     ~error:(fun (e : E.t) -> broken_answer ("failed " ^ E.to_string e))
     key_result
 
+(* M17 (M16 verify residual 1, the CLOSE half). The same
+   application/json refusal path, with the read half green and the
+   CLOSE half failing. lib/clientx.ml:173 states that a close error
+   WINS over the read result, and read_then_close folds the close
+   result over the read result, so the Result.bind of chat_stream never
+   reaches its continuation and the caller is told the TRANSPORT error,
+   not the "server answered application/json, not a stream" text. The
+   read half is overridden too, so this row observes the CLOSE branch
+   whatever the scripted body does. *)
+module Json_close_fail = struct
+  include F
+
+  let read_all ?cap:(_ : int option) (_ : body) : (string, E.t) result =
+    Ok completion
+
+  let close (_ : body) : (unit, E.t) result =
+    Error (E.Transport_failed "close boom")
+end
+
+module Cjc = Cl.Make (Json_close_fail) (Ck.Fake)
+
+let s_stream_json_close : answer =
+  Result.fold
+    ~ok:(fun (k : K.t) ->
+      Result.fold
+        ~ok:(fun (cl : Cjc.t) ->
+          Option.fold ~none:(broken_answer "test fixture missing")
+            ~some:(fun (Any ch) ->
+              answer_of stream_render (Cjc.chat_stream cl ch count_all))
+            any_chat)
+        ~error:(fun (e : E.t) -> broken_answer ("failed " ^ E.to_string e))
+        (Cjc.make ~key:k
+           ~transport:(F.make [ answer ok_head completion ])
+           ~clock:(Ck.Fake.make ~now:(now ()) ())
+           ()))
+    ~error:(fun (e : E.t) -> broken_answer ("failed " ^ E.to_string e))
+    key_result
+
 (* ---------- max_body window ---------- *)
 
 let window_text (r : (C.t, E.t) result) : string =
@@ -864,7 +902,11 @@ let stream_checks : (string * bool) list =
       String.equal s_stream_cut.o_stop "none" );
     ( "clientx: a failing read on the application/json refusal keeps the \
        transport text",
-      String.equal s_stream_json_read.a_text "failed transport: read boom" ) ]
+      String.equal s_stream_json_read.a_text "failed transport: read boom" );
+    ( "clientx: a failing CLOSE on the application/json refusal wins over \
+       the refusal text",
+      String.equal s_stream_json_close.a_text "failed transport: close boom" )
+  ]
 
 (* D11: no error text, no obstacle text and no rendered stop may carry
    a key byte. The test key is distinctive, so a substring search is

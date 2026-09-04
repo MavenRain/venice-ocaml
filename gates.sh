@@ -10,7 +10,7 @@ cd "$here"
 dunecho build
 
 # Test suites; grows one entry per milestone that lands a suite.
-suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx"
+suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx test_hmacx"
 # The capture sits in an if-condition so a failing suite cannot abort
 # the script (set -e) before its output and name reach the log; the
 # FAIL-text case still guards a suite that prints FAIL yet exits 0.
@@ -44,6 +44,11 @@ if [ -z "$py" ]; then
 fi
 "$py" "$here/harness/diff_limbs.py"
 
+# The M17 differential harness, the same shape over test_hmacx.ml: the
+# RFC 4231 and RFC 5869 vectors are recomputed with python hmac and
+# hashlib and each one must sit inside a check row. Unconditional too.
+"$py" "$here/harness/diff_hmac.py"
+
 # Model check + correspondence (M35..M37).
 if [ -x "$here/model/check.sh" ]; then
   "$here/model/check.sh"
@@ -64,7 +69,13 @@ fi
 # Bytes, no Buffer, no Array and no refs, with the one division of the
 # whole unit inside div_pos, so it joins the core list after retryx.ml
 # and keeps the list in dependency order.
-core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml"
+# hmacx.ml is the SECOND crypto-tower module (M17): pure and sans-io in
+# the same shape, no Bytes, no Buffer, no Array, no refs and no
+# division line at all, with block_size and hash_len as unit thunks so
+# the trap-2 rule holds inside every helper. It links sha2 for the
+# SHA-256 compression function, which is an external library call and
+# zxlint-clean, so it joins the list after limbsx.ml.
+core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml hmacx.ml"
 if [ -n "$core" ]; then
   # The list is echoed so the gate LOG proves which modules zxlint
   # covered; zxlint itself prints only a verdict.

@@ -306,9 +306,15 @@ let to_be_string ~(len : int) (x : t) : string option =
     Some (Bytesx.of_codes (List.init (len - need) (fun (_ : int) -> 0) @ be))
 
 (* Strict: Hexx.decode rejects any byte outside the alphabet and any
-   odd length, so a bad character is never read as a zero nibble. *)
+   odd length, so a bad character is never read as a zero nibble. The
+   length guard comes FIRST, so hostile input is refused in O(1)
+   instead of decoded into 2 * max_bytes () bytes and capped after the
+   fact. Output-equivalent: the decode-then-cap path answered None for
+   the same strings. *)
 let of_hex (s : string) : t option =
-  Option.bind (Result.to_option (Hexx.decode s)) of_be_string
+  match () with
+  | () when String.length s > 2 * max_bytes () -> None
+  | () -> Option.bind (Result.to_option (Hexx.decode s)) of_be_string
 
 (* ---------- arithmetic ---------- *)
 

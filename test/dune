@@ -82,3 +82,8 @@
  (name test_limbsx)
  (modules test_limbsx)
  (libraries venice))
+
+(test
+ (name test_hmacx)
+ (modules test_hmacx)
+ (libraries venice))

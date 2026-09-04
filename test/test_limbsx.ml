@@ -51,6 +51,11 @@ let limbs_eq (a : L.t option) (ls : int list) : bool =
 
 let zeros (k : int) : int list = List.init (Int.max k 0) (fun (_ : int) -> 0)
 
+(* k hex zero characters, without String.make: the oversized-input row
+   feeds a string longer than the of_hex length guard allows. *)
+let hex_zeros (k : int) : string =
+  String.concat "" (List.init (Int.max k 0) (fun (_ : int) -> "0"))
+
 (* ---------- the pinned values ---------- *)
 
 (* 2^255 - 19, an arbitrary base under it, and the e = 65537 modexp
@@ -185,7 +190,9 @@ let hex_checks : (string * bool) list =
     ( "limbsx: of_hex pairs two bytes into one limb",
       limbs_eq (L.of_hex "0102") [ 0x0102 ] );
     ( "limbsx: of_hex of the empty string is zero",
-      opt_eq (L.of_hex "") (Some L.zero) ) ]
+      opt_eq (L.of_hex "") (Some L.zero) );
+    ( "limbsx: of_hex refuses an oversized string before it decodes it",
+      Option.is_none (L.of_hex (hex_zeros ((2 * L.max_bytes ()) + 2))) ) ]
 
 let cmp_checks : (string * bool) list =
   [ ( "limbsx: cmp is negative at the same limb count",
