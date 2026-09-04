@@ -196,13 +196,47 @@ live probe confirms it (M2 pins the probe fixtures). Re-verify on SDK bumps.
   spec's silent discard.
 - Termination convention: a literal `data: [DONE]` event ends a chat
   stream (OpenAI convention;  not in the swagger file).
-- Deferred to M14: cross-chunk accumulation of the M11 ssex tool_call
-  fragments into Msgx.Tool_call;  M11 ships the per-chunk fragment
-  view only.
-- OPEN FACTS (pin at the M2 probe): chunk schema unpinned (the
-  OpenAI-compat shape is a hypothesis);  usage placement (per-chunk vs
-  a usage-only final chunk);  whether E2EE streams end with [DONE];
-  first-chunk search-results member shape;  chunk finish_reason values.
+- Landed at M14: cross-chunk accumulation of the M11 ssex tool_call
+  fragments into Msgx.Tool_call.  `Venice.Sse.Acc` folds the chunks and
+  renders one chat.completion document that `Respx.of_string` reads
+  back, so the streaming path and the non-streaming path share ONE
+  grammar.  The M11 per-chunk fragment view stays as it is.
+- OPEN FACTS (pin at the M2 probe).  The M14 accumulator assumes each
+  one below, so a capture that refutes one is an accumulator
+  correction and not a new module.
+  - Chunk schema unpinned;  the OpenAI-compat shape is a hypothesis.
+    M14 W1 states that `id`, `model` and `created` hold constant across
+    every chunk of one stream.  A second chunk with a different value
+    refutes it.  M14 rejects such a stream today with `stream: id
+    changed` and its siblings.
+  - M14 W2 states that `role` arrives only in the first delta of a
+    choice, with the value "assistant".  A later delta with a
+    different role refutes it.  Ssex keeps the role verbatim, so a
+    foreign role reaches the accumulator intact and fails in the one
+    grammar instead of being rewritten.
+  - M14 W3 states that a tool_call fragment carries `index` plus `id`
+    plus `function.name` first, and `function.arguments` only after
+    that.  A continuation fragment that repeats `id`, or a `name` that
+    arrives in pieces, refutes it.  Fragment index DENSITY is an
+    observation and not a rule:  M14 accepts sparse indices.
+  - Usage placement, per-chunk against a usage-only final chunk.  M14
+    W5 accumulates usage last-wins, so both shapes read the same and
+    the raw usage bytes reach the rendered document.
+  - Whether E2EE streams end with [DONE].  M14 W6 states that
+    `data: [DONE]` terminates a chat stream, which the M11
+    `Require_done` closing enforces.  A stream that ends at clean EOF
+    needs `Allow_eof`, which `Stream.Make (T).run` forwards.
+  - First-chunk search-results member shape.  M14 keeps
+    `venice_parameters` RAW and unpublished, so it pins no shape.
+  - Chunk finish_reason values.  M14 W4 states that `finish_reason` is
+    non-null exactly once per choice, on that choice's last chunk.
+    Two non-null values on one choice, or a choice that ends with
+    none, refutes it.  The raw string survives the fold, and only
+    `to_response` reads it through the closed Respx enum.
+  - M14 W7 is ENFORCED and not open:  every chunk carries `object`
+    equal to "chat.completion.chunk", plus `id`, `model`, `created`
+    and a per-choice `index`.  A capture with a different object
+    string is an M11 correction, not an M14 one.
 
 ## Transport
 - The curl facts live in CURL.md at the repo root.  This file stays

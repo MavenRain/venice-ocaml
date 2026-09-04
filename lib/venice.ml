@@ -38,7 +38,15 @@ module Cache_retention = Chatx.Cache_retention
 module Tool = Chatx.Tool
 module Chat = Chatx
 module Response = Respx
-module Sse = Ssex
+
+(* M14: the accumulator sits INSIDE the Sse block, because it reads
+   nothing but chunks. *)
+module Sse = struct
+  include Ssex
+  module Acc = Accx
+end
+
+module Stream = Streamx
 module Api_key = Keyx
 
 module Http = struct
@@ -63,4 +71,15 @@ module Transport = struct
 
   module Curl = Curlx
   module Fake = Fakex
+end
+
+(* M14 drift guard (A6). streamx carries its OWN copy of the
+   transport signature, because naming Venice.Transport.S inside
+   streamx.ml would make venice depend on a module that depends on
+   venice. This functor application compiles ONLY while every
+   Transport.S is a Streamx.S, so the day the two signatures part the
+   build fails here instead of at a call site. It is applied to no
+   argument and emits no code. *)
+module _ (T : Streamx.S) = struct
+  module _ : Transport.S = T
 end

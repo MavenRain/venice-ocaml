@@ -1,0 +1,4 @@
+(executable
+ (name stream_demo)
+ (modules stream_demo)
+ (libraries venice unix))

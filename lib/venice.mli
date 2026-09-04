@@ -23,6 +23,7 @@ module Error : sig
     | Req_invalid of string
     | Wire_invalid of string
     | Transport_failed of string
+    | Stream_invalid of string
 
   val to_string : t -> string
 end
@@ -907,6 +908,13 @@ module Chat : sig
 
   val emit : 'c t -> string
   (* the request body bytes; deterministic, byte-stable member order *)
+
+  val to_json : ?stream:bool -> ?include_usage:bool -> 'c t -> Json.t
+  (* M14 D10: the request document before emit. A streaming caller
+     needs stream:true and stream_options.include_usage:true, and a
+     test needs to read one member without re-parsing the bytes. emit
+     is to_json under the default flags plus Json.emit, so the two
+     readings cannot drift. *)
 end
 
 (* M10 chat response domain. of_string parses a 200-response body:
@@ -1179,6 +1187,71 @@ module Sse : sig
     val choices : t -> Choice.t list
     val usage_opt : t -> Response.Usage.t option
   end
+
+  module Acc : sig
+    (* M14 cross-chunk accumulator: streamed chunks folded into ONE
+       chat.completion document, pure and total. No IO, no effects, no
+       mutation: the caller threads the fold, so a cursor consumer, a
+       test and a replay share one implementation.
+
+       Ledger. id, model and created are first-wins and a disagreeing
+       chunk rejects. Per choice, role is first-wins, content and
+       reasoning_content append in received order and join once at
+       finish. usage is last-wins (the final-chunk convention).
+       tool_call fragments key on the wire index, sparse indices
+       included; id and name are first-wins, a changed id rejects, a
+       fragment with no id and no open call rejects, and a call with
+       no name rejects at finish. Caps count distinct keys: 128 choice
+       indices, 64 fragment indices per choice. finish_reason is
+       required on every choice at finish and is held RAW, so a
+       foreign value keeps the document readable. Every rejection is
+       Stream_invalid. *)
+    type t
+
+    val empty : t
+    val step : t -> Chunk.t -> (t, Error.t) result
+    (* one chunk into the fold, all-or-nothing *)
+
+    val chunks : t -> int
+
+    module Choice : sig
+      type t
+
+      val index : t -> int
+      val role : t -> string option
+      val content : t -> string option
+      val reasoning_content : t -> string option
+      val tool_calls : t -> Tool_call.t list
+      (* minted in ascending wire-index order *)
+
+      val finish_raw : t -> string
+      val finish : t -> (Response.Finish.t, Error.t) result
+      val stop_reason_raw : t -> string option
+      val stop_reason : t -> (Response.Stop_reason.t option, Error.t) result
+      (* the closed enums read the raw strings on demand; a foreign
+         value fails the VIEW alone *)
+    end
+
+    type final
+
+    val finish : t -> (final, Error.t) result
+    (* rejects an empty fold, a choice with no finish_reason and a
+       tool_call with no name *)
+
+    val id : final -> string
+    val model : final -> string
+    val created : final -> int
+    val choices : final -> Choice.t list
+    (* ascending wire-index order *)
+
+    val usage_opt : final -> Response.Usage.t option
+
+    val to_response : final -> (Response.t, Error.t) result
+    (* The rendered document re-parsed by Response.of_string: ONE
+       grammar reads the streaming and the non-streaming path, so the
+       two readings cannot drift. A response rejection returns
+       verbatim. *)
+  end
 end
 
 module Api_key : sig
@@ -1381,5 +1454,62 @@ module Transport : sig
     val make : exchange list -> t
     val requests : t -> Http.Request.t list
     (* every request send accepted, in call order *)
+  end
+end
+
+(* M14 PULL streaming. An OCaml 5 effect handler turns the SSE
+   machine and the transport boundary into a cursor the CALLER
+   drives: the consumer asks for the next chunk, and nothing is read
+   until it does, so a consumer that stops reading costs exactly the
+   bytes it already asked for. A push loop cannot do that without an
+   exception to break it, and this SDK raises none.
+
+   Ledger, closed.
+   - The cursor is one-shot and NOT reentrant. next removes the
+     suspended producer before it resumes it, so a re-entrant next
+     reads None instead of resuming twice.
+   - run is a bracket: the body closes EXACTLY once, on a drained
+     stream, a cut, a driver failure and a consumer exception alike.
+     On the exception path run closes, poisons the cursor and
+     re-raises, and no outcome is produced.
+   - After the run the cursor is DEAD: next reads None forever and
+     touches neither the transport nor the machine.
+   - Reading stops at the first outcome. After [DONE] the driver
+     drains at most 4096 reads and 1 MiB, so a server that holds the
+     socket open after the terminator cannot pin the consumer.
+   - Complete means BOTH closes said Ok. A transport close error WINS
+     over an SSE close error, because a broken connection explains a
+     truncated stream and the truncation does not explain the
+     connection. *)
+module Stream : sig
+  type outcome =
+    | Complete
+    | Cut
+    | Failed of Error.t
+
+  type cursor
+
+  val next : cursor -> Sse.Chunk.t option
+  (* None means the stream is over OR the run has ended; the outcome
+     says which *)
+
+  val iter : cursor -> (Sse.Chunk.t -> unit) -> unit
+  val fold : cursor -> init:'s -> f:('s -> Sse.Chunk.t -> 's) -> 's
+
+  val collect : cursor -> (Sse.Acc.final, Error.t) result
+  (* drains into the accumulator; a rejected chunk stops the drain,
+     which leaves the run a Cut *)
+
+  module Make (T : Transport.S) : sig
+    val run :
+      ?closing:Sse.closing ->
+      ?max_line_bytes:int ->
+      ?max_event_bytes:int ->
+      T.body ->
+      (cursor -> 'a) ->
+      'a * outcome
+    (* The bracket. The optional arguments are the SSE machine's own,
+       defaults included. The cursor is valid only inside the
+       consumer. *)
   end
 end

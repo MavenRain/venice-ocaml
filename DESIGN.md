@@ -64,7 +64,7 @@ the version probe and the two-pipe IO trap) is in `CURL.md`.
 
 Root module `venice.ml` / `venice.mli` is the only public signature.
 Internal units are x-suffixed (errx bytesx hexx b64x jsonx modelx paramsx
-msgx headx ssex keyx httpx cfgx wirex curlx fakex limbsx hmacx keccakx
+msgx headx ssex accx keyx httpx cfgx wirex curlx fakex limbsx hmacx keccakx
 p256x secpx aesx gcmx quotex sigx derx attestx sessx clientx streamx),
 hidden behind it.
 
@@ -163,15 +163,24 @@ module Transport : sig
   (* Curl and Fake are both host layer *)
 end
 
-module Stream : sig
-  type _ Effect.t += Delta : Sse.Chunk.Delta.t -> unit Effect.t   (* host layer *)
-  val run : (unit -> 'a) -> on_delta:(Sse.Chunk.Delta.t -> unit) -> 'a
+module Stream : sig                       (* host layer: the ONE handler *)
+  type outcome = Complete | Cut | Failed of Error.t
+  type cursor                             (* dead after run returns *)
+  val next : cursor -> Sse.Chunk.t option
+  val iter : cursor -> (Sse.Chunk.t -> unit) -> unit
+  val fold : cursor -> init:'s -> f:('s -> Sse.Chunk.t -> 's) -> 's
+  val collect : cursor -> (Sse.Acc.final, Error.t) result
+  module Make (T : Transport.S) : sig
+    val run :
+      ?closing:Sse.closing -> ?max_line_bytes:int -> ?max_event_bytes:int ->
+      T.body -> (cursor -> 'a) -> 'a * outcome
+  end
 end
 ```
 
 ## 4. Dependencies
 
-Stdlib-only core plus our own pinned libraries (karamel-710 switch):
+Stdlib-only core plus our own pinned libraries (zxcaml-p1 switch, OCaml 5.2.1):
 
 - `sha2` (git+file pin): SHA-256 for HMAC/HKDF, ECDSA digests, QE binding.
 - `ctlk_topos` (git+file pin): joins the opam depends at M35 for `model/`.
@@ -190,6 +199,12 @@ processes, pipes and `select`. `venice_ocaml.opam` needs no new depend,
 because `unix` ships with OCaml >= 5.1. That is a decision, not a gap:
 an opam depend on `unix` would pin a package that the compiler already
 provides.
+
+The M14 units add no depend either.  Effect handlers ship inside the
+OCaml 5 compiler, so `streamx` needs no library for the one handler.
+`streamx` also needs no `unix`: it reads and closes through the
+`Transport.S` boundary, and the transport owns the file descriptors.
+`accx` is pure and stdlib-only.
 
 ## 5. Model plan (model/)
 
@@ -226,7 +241,7 @@ plus a full-edge differential sweep (x402-caml conformance pattern).
 - Cert validity and freshness need an explicit `~now` witness.
 - No exceptions, no partial indexing, combinators over match on
   Option/Result, exhaustive matches, effects only in the host layer and
-  always discharged by `Stream.run`.
+  always discharged by the one handler inside `Stream.Make (T).run`.
 
 ## 7. Milestones
 
@@ -249,7 +264,7 @@ plus a full-edge differential sweep (x402-caml conformance pattern).
 | M12 | compile-fail harness I: domain misuses + compiling control;  the inline battery moves to `harness/compile_fail_i.sh` and gates.sh calls it UNCONDITIONALLY (a missing or non-executable harness is a red gate, never a silent skip);  cases cf_a..cf_m, where cf_k (no key projection) and cf_l (wrong route method) are M13 boundary cases riding in the harness-I extraction |
 | **C: transport + effects** | |
 | M13 | transport boundary: `keyx` (opaque API key, no published projection), `httpx` (Endpoint, phantom-indexed Route, Request mint with percent-encoded query and a reserved-header table), `cfgx` (the pure curl config renderer, the ONE place the key becomes bytes), `wirex` (incremental head reader, CRLF or bare LF per line, 1xx skipping), `curlx` (curl subprocess over raw fds and `Unix.select`, version probe, config-line cap, stderr ring, key redaction) and `fakex` (scripted twin) behind `Venice.Transport.S`;  test_transport + test_curlx |
-| M14 | streamx: effect Delta, handlers (run/iter/fold), direct-style demo, scripted-transport determinism tests;  cross-chunk accumulation of the M11 ssex tool_call fragments into Msgx.Tool_call (M11 ships the per-chunk fragment view only) |
+| M14 | streamx: a PULL cursor over the M11 SSE machine and the M13 transport boundary, with ONE `Effect.Deep.try_with` per run, ONE state ref and one sealed `Delta` effect;  `Stream.Make (T).run` is a bracket that closes the body exactly once and poisons the cursor on every exit path, the consumer included, and the post-[DONE] drain is bounded;  `next`, `iter`, `fold` and `collect` are transport-independent;  accx: the pure cross-chunk accumulator that folds the M11 chunks (tool_call fragments into `Msgx.Tool_call` included) into one chat.completion document and re-parses it with `Respx.of_string`, so the streaming and the non-streaming path share ONE grammar;  `Venice.Sse.Acc` plus `Venice.Stream` in venice.mli, `Chat.to_json` promoted for a streaming request body, `Errx.Stream_invalid`, the `Ssex.Chunk.usage_raw` seam, fakex read and close counters, `examples/stream_demo.ml`, test_accx + test_streamx + cf_n |
 | M15 | clientx: chat, chat_stream, models; bounded typed retry/backoff honoring reset headers; fake-transport e2e + tests |
 | **D: crypto tower (core subset)** | |
 | M16 | limbsx port + modexp + tests |

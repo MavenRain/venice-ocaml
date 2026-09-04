@@ -3,4 +3,4 @@
  (public_name venice_ocaml)
  (libraries unix)
  (modules venice errx bytesx hexx b64x jsonx paramsx modelx msgx headx chatx
-   respx ssex keyx httpx cfgx wirex curlx fakex))
+   respx ssex accx streamx keyx httpx cfgx wirex curlx fakex))

@@ -127,3 +127,62 @@ let base : string =
     ~ok:(fun (r : Venice.Http.Request.t) ->
       Venice.Http.Request.url Venice.Http.Endpoint.default r)
     ~error:Venice.Error.to_string listing
+
+(* M14: the streaming surface through the public boundary. Stream.Make
+   applies to BOTH shipped transports, the cursor combinators read the
+   published chunk type, and the accumulator folds chunks into a
+   chat.completion document. This is a SURFACE control: an API break
+   shows up here as a control failure instead of a false "rejected as
+   expected". The drift guard is a separate thing and lives in
+   lib/venice.ml (A6). *)
+module Sf = Venice.Stream.Make (Venice.Transport.Fake)
+module Sc = Venice.Stream.Make (Venice.Transport.Curl)
+
+let streaming_request (p : Venice.Model.packed) :
+    (Venice.Http.Request.t, Venice.Error.t) result =
+  match p with
+  | Venice.Model.Pack m ->
+    Result.bind (Venice.Msg.user_text "hello") (fun u ->
+        Result.bind (Venice.Msg.nonempty [ u ]) (fun msgs ->
+            Result.bind (Venice.Chat.make m msgs ()) (fun c ->
+                Venice.Http.Request.post Venice.Http.Route.chat_completions
+                  ~body:
+                    (Venice.Chat.to_json ~stream:true ~include_usage:true c))))
+
+let stream_script : Venice.Transport.Fake.t =
+  Venice.Transport.Fake.make
+    [ Venice.Transport.Fake.exchange
+        ~head:
+          "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n"
+        ~chunks:[ "data: [DONE]\n\n" ] () ]
+
+let streamed (p : Venice.Model.packed) :
+    (int * Venice.Stream.outcome, Venice.Error.t) result =
+  Result.bind key (fun (k : Venice.Api_key.t) ->
+      Result.bind (streaming_request p) (fun (req : Venice.Http.Request.t) ->
+          Result.map
+            (fun (((_ : Venice.Http.Wire.head), b)) ->
+              Sf.run b (fun (cur : Venice.Stream.cursor) ->
+                  Venice.Stream.fold cur ~init:0
+                    ~f:(fun (n : int) ((_ : Venice.Sse.Chunk.t)) -> n + 1)))
+            (Venice.Transport.Fake.send stream_script ~key:k req)))
+
+(* The curl functor application is a type-level control only: nothing
+   here opens a subprocess. *)
+let curl_run (t : Venice.Transport.Curl.t) (b : Venice.Transport.Curl.body) :
+    (Venice.Sse.Acc.final, Venice.Error.t) result * Venice.Stream.outcome =
+  let (_ : Venice.Transport.Curl.t) = t in
+  Sc.run b Venice.Stream.collect
+
+(* The accumulator through the public boundary: one chunk in, one
+   chat.completion document out, read by the non-streaming parser. *)
+let accumulate (c : Venice.Sse.Chunk.t) :
+    (Venice.Response.t, Venice.Error.t) result =
+  Result.bind (Venice.Sse.Acc.step Venice.Sse.Acc.empty c)
+    (fun (a : Venice.Sse.Acc.t) ->
+      Result.bind (Venice.Sse.Acc.finish a) Venice.Sse.Acc.to_response)
+
+let accumulated_choices (f : Venice.Sse.Acc.final) : string list =
+  List.map
+    (fun (c : Venice.Sse.Acc.Choice.t) -> Venice.Sse.Acc.Choice.finish_raw c)
+    (Venice.Sse.Acc.choices f)

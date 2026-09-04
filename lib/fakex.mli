@@ -46,3 +46,10 @@ val read_all : ?cap:int -> body -> (string, Errx.t) result
 val close : body -> (unit, Errx.t) result
 (* Ok, or the scripted close_error. Idempotent, like Curl.close: a
    second call returns Ok. *)
+
+val reads : body -> int
+val closes : body -> int
+(* M14 A5 test seams: every read call and every close call, the
+   idempotent second close included. close is idempotent, so a
+   "closed exactly once" claim is unobservable without this counter
+   and the close-twice mutant would survive. *)

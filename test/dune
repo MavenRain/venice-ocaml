@@ -49,6 +49,16 @@
  (libraries venice))
 
 (test
+ (name test_accx)
+ (modules test_accx)
+ (libraries venice))
+
+(test
+ (name test_streamx)
+ (modules test_streamx)
+ (libraries venice))
+
+(test
  (name test_transport)
  (modules test_transport)
  (libraries venice unix))

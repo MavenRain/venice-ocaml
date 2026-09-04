@@ -101,6 +101,7 @@ let bin_garbage : string = fake "curl_garbage"
 let bin_exit28 : string = fake "curl_exit28"
 let bin_leak : string = fake "curl_leak"
 let bin_bigerr : string = fake "curl_bigerr"
+let bin_bigerr0 : string = fake "curl_bigerr0"
 let bin_slow : string = fake "curl_slow"
 let bin_nohead : string = fake "curl_nohead"
 let bin_missing : string = fake "curl_absent"
@@ -294,6 +295,21 @@ let leak_close : (unit, E.t) result = drain_then_close bin_leak
 let bigerr_body : string = body_text bin_bigerr
 let bigerr_close : (unit, E.t) result = drain_then_close bin_bigerr
 
+(* M14 A17 (D17 residual 2): the exit-0 twin of curl_bigerr.  The
+   shipped bigerr fake exits 7, so the exit-0 path behind a FULL
+   stderr pipe rested on exit_result alone.  close maps WEXITED 0 to
+   Ok on its own, so the close assertion has no false branch by
+   itself: the deadlock oracle is the head-and-body read, and the
+   wall clock turns a partial stall into a FAIL line instead of a
+   watchdog kill. *)
+let bigerr0_body : string = body_text bin_bigerr0
+let bigerr0_close : (unit, E.t) result = drain_then_close bin_bigerr0
+
+let bigerr0_secs : float =
+  let t0 = Unix.gettimeofday () in
+  let (_ : (unit, E.t) result) = drain_then_close bin_bigerr0 in
+  Unix.gettimeofday () -. t0
+
 let early : float * bool =
   let t0 = Unix.gettimeofday () in
   let ok = with_body bin_slow (fun (b : Cu.body) -> Result.is_ok (Cu.close b)) in
@@ -320,6 +336,12 @@ let failure_checks : (string * bool) list =
       String.length (err_text bigerr_close) < 5000 );
     ( "stderr: the tail holds stderr bytes",
       contains (err_text bigerr_close) "EEEEEEEE" );
+    ( "stderr0: a 200000 byte stderr does not deadlock the head read",
+      String.equal bigerr0_body "ok" );
+    ( "stderr0: close is Ok on exit 0 behind a full pipe",
+      Result.is_ok bigerr0_close );
+    ( "stderr0: send plus read plus close stays under 10 s",
+      bigerr0_secs < 10.0 );
     ( "head: a missing head reports the exit, not the wire error",
       err_has (attempt bin_nohead listing) "curl exit 52" );
     ( "head: 52 carries the empty-reply meaning",

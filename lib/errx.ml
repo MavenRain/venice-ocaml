@@ -4,7 +4,8 @@
    model domain, M6 the sampling parameters, M7 the message domain,
    M8 the response-header domain, M9 the chat request domain, M10 the
    chat response domain, M11 the SSE stream and chunk domains, M13
-   the key, request, wire-head and transport domains. *)
+   the key, request, wire-head and transport domains, M14 the stream
+   accumulator domain. *)
 
 type t =
   | Hex_invalid of string
@@ -22,6 +23,7 @@ type t =
   | Req_invalid of string
   | Wire_invalid of string
   | Transport_failed of string
+  | Stream_invalid of string
 
 let to_string (e : t) : string =
   match e with
@@ -40,3 +42,4 @@ let to_string (e : t) : string =
   | Req_invalid s -> "req: " ^ s
   | Wire_invalid s -> "wire: " ^ s
   | Transport_failed s -> "transport: " ^ s
+  | Stream_invalid s -> "stream: " ^ s

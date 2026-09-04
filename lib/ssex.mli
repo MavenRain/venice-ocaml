@@ -216,6 +216,13 @@ module Chunk : sig
      Chunk_invalid, so the streaming and non-streaming readings
      cannot drift *)
 
+  val usage_raw : t -> Jsonx.t option
+  (* internal seam (M14 A2): the raw usage object beside the typed
+     reading, absent OR null reading None exactly like usage_opt. The
+     M14 accumulator re-emits these bytes, so the rendered document
+     carries the server's own usage member. venice.mli does not
+     re-export it. *)
+
   val venice_parameters_raw : t -> Jsonx.t option
   (* internal seam for M15; the first-chunk citations /
      search-results facts ride here, shape unpinned *)

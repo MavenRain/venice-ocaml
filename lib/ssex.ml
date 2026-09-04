@@ -297,7 +297,8 @@ let with_last (last : string option) (e : Errx.t) : Errx.t =
   | Errx.Model_invalid _ | Errx.Param_invalid _ | Errx.Msg_invalid _
   | Errx.Head_invalid _ | Errx.Chat_invalid _ | Errx.Resp_invalid _
   | Errx.Chunk_invalid _ | Errx.Key_invalid _ | Errx.Req_invalid _
-  | Errx.Wire_invalid _ | Errx.Transport_failed _ ->
+  | Errx.Wire_invalid _ | Errx.Transport_failed _
+  | Errx.Stream_invalid _ ->
     e
 
 (* Close policy (A4): Require_done (default) rejects a close before
@@ -628,6 +629,7 @@ module Chunk = struct
       created : int;
       choices : Choice.t list;
       usage : Respx.Usage.t option;
+      usage_raw : Jsonx.t option;
       venice_parameters_raw : Jsonx.t option }
 
   let id (c : t) : string = c.id
@@ -635,6 +637,7 @@ module Chunk = struct
   let created (c : t) : int = c.created
   let choices (c : t) : Choice.t list = c.choices
   let usage_opt (c : t) : Respx.Usage.t option = c.usage
+  let usage_raw (c : t) : Jsonx.t option = c.usage_raw
 
   let venice_parameters_raw (c : t) : Jsonx.t option =
     c.venice_parameters_raw
@@ -665,6 +668,20 @@ module Chunk = struct
     let* model = req_string "model" (Jsonx.member "model" j) in
     let* created = req_nat "created" (Jsonx.member "created" j) in
     let* usage = usage_of_opt (Jsonx.member "usage" j) in
+    (* A2: the raw usage object rides beside the typed reading, so a
+       cross-chunk accumulator can re-emit the server's own usage
+       bytes. Same null collapse as usage_opt: absent OR null reads
+       None. *)
+    let usage_raw =
+      Option.fold ~none:None
+        ~some:(fun (v : Jsonx.t) ->
+          match v with
+          | Jsonx.Jnull -> None
+          | Jsonx.Jbool _ | Jsonx.Jint _ | Jsonx.Jdec _ | Jsonx.Jstring _
+          | Jsonx.Jlist _ | Jsonx.Jobj _ ->
+            Some v)
+        (Jsonx.member "usage" j)
+    in
     (* Absent choices parses as [] (a usage-only final chunk has
        choices []); wire null collapses to the same []. *)
     let* choices =
@@ -684,5 +701,6 @@ module Chunk = struct
         created;
         choices;
         usage;
+        usage_raw;
         venice_parameters_raw = Jsonx.member "venice_parameters" j }
 end

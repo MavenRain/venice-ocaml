@@ -9,7 +9,12 @@ type t = { script : exchange list ref; recorded : Httpx.Request.t list ref }
 type body =
   { pending : string list ref;
     scripted_error : string option;
-    closed : bool ref }
+    closed : bool ref;
+    (* M14 A5: read and close counters. Fake close is idempotent, so
+       "closed exactly once" is otherwise unobservable and the
+       close-twice mutant survives. *)
+    reads : int ref;
+    closes : int ref }
 
 let read_all_cap (() : unit) : int = 8_388_608
 
@@ -56,10 +61,13 @@ let send (t : t) ~(key : Keyx.t) (req : Httpx.Request.t) :
           ( h,
             { pending = ref (List.append (leading rest) e.chunks);
               scripted_error = e.close_error;
-              closed = ref false } ))
+              closed = ref false;
+              reads = ref 0;
+              closes = ref 0 } ))
         (parse_head e.head_bytes))
 
 let read (b : body) : (string option, Errx.t) result =
+  b.reads := !(b.reads) + 1;
   match !(b.pending) with
   | [] -> Ok None
   | c :: tl ->
@@ -83,7 +91,11 @@ let read_all ?(cap : int = read_all_cap ()) (b : body) :
   in
   go [] 0
 
+let reads (b : body) : int = !(b.reads)
+let closes (b : body) : int = !(b.closes)
+
 let close (b : body) : (unit, Errx.t) result =
+  b.closes := !(b.closes) + 1;
   match !(b.closed) with
   | true -> Ok ()
   | false ->
