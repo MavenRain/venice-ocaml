@@ -87,3 +87,8 @@
  (name test_hmacx)
  (modules test_hmacx)
  (libraries venice))
+
+(test
+ (name test_keccakx)
+ (modules test_keccakx)
+ (libraries venice))

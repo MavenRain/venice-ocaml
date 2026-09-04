@@ -98,6 +98,9 @@ if not ROWS:
     print("diff_limbs: no check row found in the suite; the oracle is vacuous")
     sys.exit(1)
 
+LABEL = re.compile(r'^\s*(?:\[\s*)?\(\s*"(?:[^"\\]|\\.)*"')
+BODIES = [LABEL.sub("", row, count=1) for row in ROWS]
+
 
 def hex256(v: int) -> str:
     return format(v, "064x")
@@ -106,7 +109,7 @@ def hex256(v: int) -> str:
 def pin(name: str, needles: list) -> None:
     """Require every needle of a pin to sit inside one check row."""
     global fail
-    missing = [x for x in needles if not any(x in row for row in ROWS)]
+    missing = [x for x in needles if not any(x in body for body in BODIES)]
     for x in missing:
         print(f"diff_limbs: {name}: recomputed value is in no check row")
         print(f"  wanted: {x}")

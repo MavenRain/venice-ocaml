@@ -10,7 +10,7 @@ cd "$here"
 dunecho build
 
 # Test suites; grows one entry per milestone that lands a suite.
-suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx test_hmacx"
+suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx test_hmacx test_keccakx"
 # The capture sits in an if-condition so a failing suite cannot abort
 # the script (set -e) before its output and name reach the log; the
 # FAIL-text case still guards a suite that prints FAIL yet exits 0.
@@ -49,6 +49,11 @@ fi
 # hashlib and each one must sit inside a check row. Unconditional too.
 "$py" "$here/harness/diff_hmac.py"
 
+# The M18 differential harness over test_keccakx.ml. Its keccak shares
+# no table with the OCaml unit, and it validates its OWN sponge against
+# hashlib.sha3_256 (the sha3 self-check line) before it reads a pin.
+"$py" "$here/harness/diff_keccak.py"
+
 # Model check + correspondence (M35..M37).
 if [ -x "$here/model/check.sh" ]; then
   "$here/model/check.sh"
@@ -75,7 +80,16 @@ fi
 # the trap-2 rule holds inside every helper. It links sha2 for the
 # SHA-256 compression function, which is an external library call and
 # zxlint-clean, so it joins the list after limbsx.ml.
-core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml hmacx.ml"
+# keccakx.ml is the THIRD crypto-tower module (M18): pure and sans-io in
+# the same shape, no Bytes, no Buffer, no Array, no refs, no division
+# line and no remainder either, because the sponge tracks the fill of
+# the current block inside the fold over the input instead of dividing
+# the input length. The 25 lanes are int64 values in named record
+# FIELDS, five to a row and five rows to a state, so no array and no
+# index arithmetic addresses a lane, and rotl is called only with
+# literal offsets in 1 .. 63, never with 0 or 64. It links nothing new
+# (Int64 is stdlib), so it joins the list after hmacx.ml.
+core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml hmacx.ml keccakx.ml"
 if [ -n "$core" ]; then
   # The list is echoed so the gate LOG proves which modules zxlint
   # covered; zxlint itself prints only a verdict.
