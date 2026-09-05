@@ -10,7 +10,7 @@ cd "$here"
 dunecho build
 
 # Test suites; grows one entry per milestone that lands a suite.
-suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx test_hmacx test_keccakx test_p256x test_secpx"
+suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx test_hmacx test_keccakx test_p256x test_secpx test_aesx test_gcmx"
 # The capture sits in an if-condition so a failing suite cannot abort
 # the script (set -e) before its output and name reach the log; the
 # FAIL-text case still guards a suite that prints FAIL yet exits 0.
@@ -70,6 +70,19 @@ fi
 # boundary values.
 "$py" "$here/harness/diff_secp.py"
 
+# The M21 differential harness over test_aesx.ml and test_gcmx.ml. Its
+# AES-256 takes the S-box inverse from a log and antilog TABLE over the
+# generator 3 and its GHASH runs over ONE python integer, so it shares
+# no formula with the computed S-box and the Int64 pair of the OCaml
+# units, and it validates its OWN arithmetic against the FIPS 197 and
+# GCM-specification known answers, the Wycheproof subset and
+# pycryptodome before it reads a pin (the aes, gcm-spec, lnsym,
+# wycheproof, corpus and pycryptodome self-check lines). Its pin groups
+# are (a) the aesx known answers, (b) the Wycheproof subset fields, (c)
+# the SP 800-38D cases 13 to 16, (d) the generated vectors and (e) the
+# length cap.
+"$py" "$here/harness/diff_gcm.py"
+
 # Model check + correspondence (M35..M37).
 if [ -x "$here/model/check.sh" ]; then
   "$here/model/check.sh"
@@ -127,7 +140,25 @@ fi
 # CALL shape never depends on a secret bit, although the
 # field-operation count is not constant. It links nothing new, so it
 # joins the list after p256x.ml.
-core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml hmacx.ml keccakx.ml p256x.ml secpx.ml"
+# aesx.ml is the SIXTH crypto-tower module (M21): pure and sans-io in
+# the same shape, no Bytes, no Buffer, no Array, no reference cell, no
+# division line and no remainder either, because the state is four
+# packed 32-bit columns in a record and no arithmetic runs on an index.
+# The S-box is COMPUTED on every call as the GF(2^8) inverse a^254
+# through a chain of eleven gf_mul calls, each of which is eight masked
+# doublings with eight masked selects, so no secret indexes memory and
+# no branch reads a bit of either operand. It links nothing new, so it
+# joins the list after secpx.ml.
+# gcmx.ml is the SEVENTH crypto-tower module (M21): pure and sans-io in
+# the same shape, with the block fill carried as a counter the fold
+# tests with Int.equal, so the unit holds no division line and no
+# remainder. GHASH multiplication is ONE fold of exactly 128 MASKED
+# steps over a pair of Int64 halves, where each mask is the arithmetic
+# negation of one shifted bit and is therefore all-zero or all-one, so
+# no branch reads a key bit or a data bit. It reads aesx, bytesx and
+# hmacx, and trap 2 fires CROSS-MODULE, so both files are linted beside
+# bytesx.ml and hmacx.ml and never alone.
+core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml hmacx.ml keccakx.ml p256x.ml secpx.ml aesx.ml gcmx.ml"
 if [ -n "$core" ]; then
   # The list is echoed so the gate LOG proves which modules zxlint
   # covered; zxlint itself prints only a verdict.

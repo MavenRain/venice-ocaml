@@ -102,3 +102,13 @@
  (name test_secpx)
  (modules test_secpx)
  (libraries venice))
+
+(test
+ (name test_aesx)
+ (modules test_aesx)
+ (libraries venice))
+
+(test
+ (name test_gcmx)
+ (modules test_gcmx)
+ (libraries venice))

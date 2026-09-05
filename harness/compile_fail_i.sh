@@ -62,3 +62,14 @@ expect_fail cf_l_route_wrong_method.ml "Venice.Http.Route.post" "not compatible"
 expect_fail cf_m_chat_foreign_messages.ml "Venice.Msg.nonempty" "not compatible"
 expect_fail cf_n_stream_sealed_effect.ml "Unbound constructor" "Venice.Stream.Delta"
 expect_fail cf_o_client_delay_unminted.ml "Unbound value" "Venice.Delay.of_ms"
+
+# The M21 case (D1): Gcmx.Key is abstract and carries NO to_bytes, so a
+# caller cannot project a key back to its bytes.  Its source is written
+# here instead of under compile_fail/, because M21 owns this harness and
+# not that directory;  the case is otherwise the cf_k shape, an abstract
+# type with no projection.  gcmx is internal, so the caller must reach
+# it through the mangled name.
+cat > "$cfdir/cf_p_key_has_no_to_bytes.ml" <<'CF_P'
+let leak (k : Venice__Gcmx.Key.t) : string = Venice__Gcmx.Key.to_bytes k
+CF_P
+expect_fail cf_p_key_has_no_to_bytes.ml "Unbound value" "Venice__Gcmx.Key.to_bytes"
