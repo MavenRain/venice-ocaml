@@ -83,6 +83,20 @@ fi
 # length cap.
 "$py" "$here/harness/diff_gcm.py"
 
+# The M22 differential harness over the real TDX fixtures. It decodes
+# fixtures/tdx_quote_v4.bin and fixtures/tdx_quote_v5.bin at ABSOLUTE
+# offsets with struct, so it shares no cursor with the OCaml quotex,
+# and it re-proves the QE binding sha256(attestation_key ||
+# qe_auth_data) and the W1 REPORTDATA formula on synthetic keys, with
+# two controls, before it reads a pin (the qe-binding, formula and v5
+# self-check lines). Its pin groups are (a) the fixture digests and
+# byte counts, (b) the v4 header and body fields, (c) the length rule
+# and the trailing padding, (d) the certification chain and (e) the qe
+# binding value. A failed pin COUNTS and the run continues, so one red
+# gate reports every disagreement.
+"$py" "$here/harness/diff_quote.py"
+"$py" "$here/harness/test_diff_quote.py"
+
 # Model check + correspondence (M35..M37).
 if [ -x "$here/model/check.sh" ]; then
   "$here/model/check.sh"

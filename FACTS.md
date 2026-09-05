@@ -213,39 +213,164 @@ live probe confirms it (M2 pins the probe fixtures). Re-verify on SDK bumps.
 - E2EE disables function calling (see the E2EE section).
 
 ## TEE attestation
-- `GET /tee/attestation?model=<id>&nonce=<64 hex>` . nonce MUST be exactly
-  32 bytes (64 hex chars); providers reject shorter.
-- Response: `verified` (server-side bool: advisory only), `nonce` (echo),
-  `model`, `tee_provider` (Intel TDX | NVIDIA), `intel_quote` (base64 TDX
-  quote), `nvidia_payload` (GPU attestation for NVIDIA NRAS),
-  `signing_key` (pubkey the enclave signs responses with),
-  `signing_address` (Ethereum address derived from signing_key).
-- Client-side verification (the point of this SDK): parse the TDX quote,
-  check nonce binding via REPORTDATA, reject debug TDs, verify the quote
-  signature chain to the pinned Intel SGX Root CA, compare measurements
-  (MRTD / RTMR0-3) against caller expectations, and bind signing_key into
-  REPORTDATA. Exact REPORTDATA binding formula: pin from a live quote +
-  the dstack source at the probe milestone (M22).
-- Operators: Phala Network + NEAR AI Cloud (dstack stack), Intel TDX CPUs
-  + NVIDIA Confidential Computing GPUs.
-- `GET /tee/signature?model=<id>&request_id=<id>`: signature over the
-  completion, verifies against `signing_address` (secp256k1 + keccak-256
-  Ethereum address). The exact signed-message content (hash formula over
-  the completion bytes + request_id) is UNPINNED: pin it at M31 and verify
-  payload equality against the received bytes, not just signer identity.
+
+M22 landed this section as a SOURCED probe and not a live one, because
+no `VENICE_API_KEY` was in the environment;  `scripts/probe_attestation.sh`
+is the one command that captures a real body and checks it, and every
+line below tagged `[live check pending]` closes the day it runs.
+
+- `GET /tee/attestation?model=<id>&nonce=<64 hex>`;  the nonce MUST be
+  exactly 32 bytes, that is 64 hex characters, and providers reject a
+  shorter one.  [docs]
+- The endpoint takes the signing algorithm as the query parameter
+  `signing_algo`, whose default is `ecdsa`, whose only other accepted
+  value is `ed25519`, and which rejects anything else.
+  [producer: private-ml-sdk/vllm-proxy/src/app/api/v1/openai.py:217-225]
+- Response, the public shape: `verified` (a server-side bool, advisory
+  only), `nonce` (the echo), `model`, `tee_provider` (Intel TDX or
+  NVIDIA), `intel_quote` (a base64 TDX quote), `nvidia_payload` (the GPU
+  attestation for NVIDIA NRAS), `signing_key` (the pubkey the enclave
+  signs responses with) and `signing_address` (the Ethereum address
+  derived from `signing_key`).  [docs]
+- The PRODUCER returns `signing_address`, `signing_algo`,
+  `request_nonce`, `intel_quote`, `nvidia_payload`, `event_log` and
+  `info`, and the route adds `all_attestations`, so Venice TRANSFORMS
+  the producer body and no source pins that transform;  the live check
+  accepts `nonce` or `request_nonce` and records which arrived.
+  [producer: private-ml-sdk/vllm-proxy/src/app/quote/quote.py:166-174]
+  [live check pending]
+- REPORTDATA binding on the ECDSA path, which is the producer default
+  and the algorithm the Venice public shape implies:
+  `report_data = address20 || 0x00 x 12 || nonce32`, where address20 is
+  the 20-byte Ethereum address left aligned in 32 bytes and zero padded
+  on the right, and nonce32 is the caller's nonce as RAW bytes, the 64
+  hex characters decoded;  there is no hash of the nonce, no prefix and
+  no length byte.
+  [producer: private-ml-sdk/vllm-proxy/src/app/quote/quote.py:40-50]
+- address20 is the last 20 bytes of keccak-256 over the 64-byte X || Y
+  with no 0x04 prefix.
+  [consumer: venice-e2ee/src/attestation.ts:134-145]
+- REPORTDATA binding on the ED25519 path: the first 32 bytes are the RAW
+  Ed25519 public key, the 32-byte pad adds nothing, and bytes 20..32
+  therefore carry key bytes and are NOT zero, so the zero window is an
+  ECDSA-path rule and not a quote rule.
+  [producer: private-ml-sdk/vllm-proxy/src/app/quote/quote.py:108-120]
+- The consumer agrees on the OFFSETS, `reportData.slice(32, 64)` for the
+  nonce and `reportData.slice(0, 20)` for the address.
+  [consumer: venice-e2ee/src/attestation.ts:373,394]
+- The consumer does NOT confirm the raw-nonce rule:  when the raw
+  compare fails it retries against `sha256(nonce)` and accepts that too,
+  so M24 implements the producer rule, the raw compare alone, because a
+  verifier that accepts both accepts a report_data the producer never
+  builds.  [consumer: venice-e2ee/src/attestation.ts:372-389]
+- Bytes 20..32 are read by NO verifier, and M24 requires them zero on
+  the ECDSA path.
+  [producer: private-ml-sdk/vllm-proxy/src/app/quote/quote.py:50]
+- The DEBUG bit is bit 0 of byte 0 of td_attributes, mask 0x01, at
+  absolute offset 168 in a v4 quote and 174 in a v5 TD 1.5 quote;  the
+  consumer masks that byte with 0x01 and treats a non-zero result as
+  debug mode.  [consumer: venice-e2ee/src/attestation.ts:367,103]
+- Quote layout (v4), every offset ABSOLUTE from byte 0.  Two independent
+  code sources agree on all 34 rows, dcap-qvl `src/quote.rs` and the
+  SECOND SOURCE go-tdx-guest `abi/abi.go`, and `fixtures/tdx_quote_v4.bin`
+  decodes to each row.  [fixture]
+  - Header 48 bytes at 0: version u16 LE at 0 (= 4), att_key_type u16 at
+    2 (= 2), tee_type u32 at 4 (= 0x00000081), `header_u16_at_8` at 8
+    and `header_u16_at_10` at 10, whose labels the two sources SWAP and
+    which this repository therefore interprets not at all, qe_vendor_id
+    16 at 12, user_data 20 at 28.  [fixture]
+  - TD report 1.0, 584 bytes at 48: tee_tcb_svn 16 at 48, mr_seam 48 at
+    64, mrsigner_seam 48 at 112, seam_attributes 8 at 160, td_attributes
+    8 at 168, xfam 8 at 176, mr_td 48 at 184, mr_config_id 48 at 232,
+    mr_owner 48 at 280, mr_owner_config 48 at 328, rt_mr0 to rt_mr3 48
+    each at 376, 424, 472 and 520, report_data 64 at 568 ending at 632.
+    [fixture]
+  - signature_data_len u32 LE at 632 (= 4300 in the fixture), signature
+    data at 636, the ECDSA signature 64 at 636, the attestation public
+    key 64 at 700 as raw X || Y, cert_key_type u16 at 764 (= 6), its
+    size u32 at 766, the QE report 384 at 770, `qe_report_data` at 1090,
+    the QE report signature 64 at 1154, the auth size u16 at 1218, the
+    auth bytes at 1220, the inner certification type u16 at 1252 (= 5),
+    its size u32 at 1254 and the PEM chain at 1258.  The ISV-signed
+    region is `quote[0..632]`.  [fixture]
+  - Trailing padding is REAL:  the rule is
+    `636 + signature_data_len <= length`, with the surplus recorded and
+    never consumed, because the fixture ends at 4936 and measures 5006
+    with 70 zero bytes after it.  [fixture]
+  - A v5 quote inserts a 6-byte body descriptor at 48, so td_attributes
+    sits at 174 and report_data at 574;  M23 rejects version 5 by
+    VERSION with a typed reason.  [fixture]
+- `fixtures/tdx_quote_v4.bin` is a REAL Intel-signed production quote,
+  not a test vector, and five legs prove it:  the ISV ECDSA-P256
+  signature over `quote[0..632]` verifies under the embedded attestation
+  key;  the QE report signature at 1154 verifies under the PCK leaf
+  public key, which is the only leg that binds the attestation key to
+  Intel;  sha256(attestation_key || auth_data) equals
+  `qe_report_data[0..32]`;  the embedded chain runs PCK leaf to PCK
+  Platform CA to Intel SGX Root CA and verifies against
+  `fixtures/collateral/TrustedRootCA.der` (659 bytes, sha256
+  `44a0196b2b99f889b8e149e95b807a350e7424964399e885a7cbb8ccfab674d3`);
+  and the leaf carries the Intel SGX extension OID
+  1.2.840.113741.1.13.1.  [fixture]
+- The fixture proves the LAYOUT and the REALITY of a production quote
+  and NOT Venice's binding, because its report_data is Phala's;
+  `fixtures/README.md` carries that TRUST paragraph in full.  [fixture]
+- `nvidia_payload` is a JSON STRING with members `nonce`,
+  `evidence_list` and `arch`, whose `nonce` is the same 64 hex
+  characters as the REPORTDATA nonce and whose pinned `arch` is
+  `HOPPER`;  the consumer reads only `arch`, the proxy only tests that
+  the member is a non-empty string, and the proxy logs a warning and
+  continues when it is absent, because the model may be CPU only.  The
+  docs table calls the member "base64", which disagrees with the
+  producer.
+  [producer: private-ml-sdk/vllm-proxy/src/app/quote/quote.py:103-105]
+  [consumer: venice-e2ee-proxy/src/e2ee/e2ee.service.ts:219-220,223-227]
+  [live check pending]
+- Client-side verification, the point of this SDK: parse the TDX quote,
+  check the nonce binding through REPORTDATA, reject debug TDs, verify
+  the quote signature chain to the pinned Intel SGX Root CA, compare the
+  measurements MRTD and RTMR0-3 against caller expectations, and bind
+  `signing_key` into REPORTDATA.  [docs]
+- Operators: Phala Network and NEAR AI Cloud on the dstack stack, Intel
+  TDX CPUs and NVIDIA Confidential Computing GPUs.  [docs]
+- `GET /tee/signature?model=<id>&request_id=<id>`: the signature is over
+  the completion and verifies against `signing_address`.  The signed
+  text is
+  `sha256(request_body_bytes).hex() + ":" + sha256(response_bytes).hex()`,
+  and for a streaming completion the response hash is a running sha256
+  over the concatenated SSE chunk text.  On the ECDSA path it is signed
+  EIP-191 personal_sign, that is keccak-256 over
+  `"\x19Ethereum Signed Message:\n" || len(text) || text`, and returned
+  as a 65-byte recoverable signature with an `0x` prefix;  on the
+  ED25519 path the same text is signed raw and returned as bare hex with
+  no prefix.  A trusted client may override the request hash with an
+  `X-Request-Hash` header that the server does not check.  M31 confirms
+  this on a live receipt and pins the member names Venice uses.
+  [producer: private-ml-sdk/vllm-proxy/src/app/api/v1/openai.py:179-181]
+  [live check pending]
 
 ## E2EE (encrypted prompts, TEE-terminated)
-- Requires `stream: true`. Disables web search, file uploads, function
-  calling.
-- Crypto: ephemeral secp256k1 ECDH -> HKDF-SHA256 -> AES-256-GCM.
-- Request headers: `X-Venice-TEE-Client-Pub-Key` (uncompressed hex,
-  130 chars, leading `04`), `X-Venice-TEE-Model-Pub-Key` (from
-  attestation), `X-Venice-TEE-Signing-Algo: ecdsa`.
-- All `user` and `system` message contents must be encrypted (hex) when
-  E2EE headers are present.
-- Response chunks: hex, minimum 186 hex chars = 93 bytes:
-  65-byte ephemeral pubkey || 12-byte GCM nonce || 16-byte tag || ct
-  (tag position vs ct: pin exact layout from the live E2EE capture at M31).
+- Requires `stream: true`.  It disables web search, file uploads and
+  function calling.  [docs]
+- Crypto: an ephemeral secp256k1 ECDH, then HKDF-SHA256, then
+  AES-256-GCM.  [docs]
+- Request headers: `X-Venice-TEE-Client-Pub-Key`, the uncompressed hex
+  of 130 characters with a leading `04`, `X-Venice-TEE-Model-Pub-Key`,
+  which comes from the attestation, and
+  `X-Venice-TEE-Signing-Algo: ecdsa`.  [docs]
+- All `user` and `system` message contents must be encrypted, as hex,
+  when the E2EE headers are present.  [docs]
+- Response chunks are hex, at least 186 hex characters, that is 93
+  bytes, and the layout puts the TAG LAST:
+  `65-byte ephemeral pubkey || 12-byte GCM nonce || ciphertext || 16-byte tag`.
+  The consumer slices the first 65 bytes as the pubkey and the next 12
+  as the nonce, then hands WebCrypto everything after byte 77 as one
+  buffer, and WebCrypto AES-GCM takes the tag as the last 16 bytes of
+  that buffer.
+  [consumer: venice-e2ee/src/crypto.ts:72-76,102-104]
+- The earlier tag-first reading recorded in this file, which put the
+  16-byte tag before the ciphertext, is SUPERSEDED by the line above;
+  M31 confirms the order on a live E2EE capture.  [live check pending]
 
 ## Streaming (SSE)
 - /chat/completions 200 declares application/json only (swagger
