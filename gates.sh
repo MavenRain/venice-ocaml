@@ -10,7 +10,7 @@ cd "$here"
 dunecho build
 
 # Test suites; grows one entry per milestone that lands a suite.
-suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx test_hmacx test_keccakx test_p256x test_secpx test_aesx test_gcmx"
+suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx test_hmacx test_keccakx test_p256x test_secpx test_aesx test_gcmx test_quotex"
 # The capture sits in an if-condition so a failing suite cannot abort
 # the script (set -e) before its output and name reach the log; the
 # FAIL-text case still guards a suite that prints FAIL yet exits 0.
@@ -92,8 +92,8 @@ fi
 # self-check lines). Its pin groups are (a) the fixture digests and
 # byte counts, (b) the v4 header and body fields, (c) the length rule
 # and the trailing padding, (d) the certification chain and (e) the qe
-# binding value. A failed pin COUNTS and the run continues, so one red
-# gate reports every disagreement.
+# binding value, and (f) the M23 suite pins. A failed pin COUNTS and
+# the run continues, so one red gate reports every disagreement.
 "$py" "$here/harness/diff_quote.py"
 "$py" "$here/harness/test_diff_quote.py"
 
@@ -172,7 +172,21 @@ fi
 # no branch reads a key bit or a data bit. It reads aesx, bytesx and
 # hmacx, and trap 2 fires CROSS-MODULE, so both files are linted beside
 # bytesx.ml and hmacx.ml and never alone.
-core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml hmacx.ml keccakx.ml p256x.ml secpx.ml aesx.ml gcmx.ml"
+# quotex.ml is the FIRST attestation-tower module (M23): pure and
+# sans-io in the same shape, no Bytes, no Buffer, no Array, no
+# reference cell, no division line and no remainder either, because
+# every window is a total bytesx cursor and every integer is a bytesx
+# little-endian reader, so no arithmetic runs on an index. ONE layout
+# record built by layout () carries every offset, every size and every
+# expected constant, and it is passed FIRST to every helper, so no
+# helper reads a top-level constant under trap 2. The PEM chain is cut
+# by a RECURSIVE marker scan with no loop keyword and no reference
+# cell. It reads bytesx and errx only, and trap 2 fires CROSS-MODULE,
+# so this file is linted beside bytesx.ml and never alone. It is the
+# FIRST module the omlz note at lines 105 to 108 above names as a bpf
+# artifact, so it holds no functor and no Map and stays eligible for
+# the M38 gate that the ladder does not run today.
+core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml hmacx.ml keccakx.ml p256x.ml secpx.ml aesx.ml gcmx.ml quotex.ml"
 if [ -n "$core" ]; then
   # The list is echoed so the gate LOG proves which modules zxlint
   # covered; zxlint itself prints only a verdict.

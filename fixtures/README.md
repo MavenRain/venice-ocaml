@@ -214,10 +214,11 @@ fixture.
 
 ## PARSER RULES
 
-These are the eight rules M22 hands to M23.  No code implements them
-yet.  The M23 row of DESIGN.md carries the same eight rules in the same
-order, so the row and this section read identically, and a lens can
-attack a rule now rather than after the decoder lands.
+These are the eight rules M22 hands to M23.  M23 quotex implements
+rules 1-8;  `test/test_quotex.ml` pins every row of the tables above.
+The M23 row of DESIGN.md carried these eight rules in this order before
+the decoder landed, and it now carries the long-form shipped row of
+D13, so this section stays the rule text of record.
 
 1. Version 4 only.
 2. att_key_type 2 only.

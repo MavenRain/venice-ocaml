@@ -26,13 +26,15 @@ module Error : sig
     | Stream_invalid of string
     | Transport_unreachable of string
     | Client_invalid of string
+    | Quote_invalid of string
 
   val to_string : t -> string
   (* M15: Transport_unreachable prints under "unreachable: " and means
      the transport proved that no request byte reached a server, so a
      retry of the same request cannot double-bill. Client_invalid
      prints under "client: " and is always the SDK's own rejection,
-     never a server verdict. *)
+     never a server verdict. M23: Quote_invalid prints under "quote: "
+     and names the TDX quote check that refused the bytes. *)
 end
 
 module Cursor : sig

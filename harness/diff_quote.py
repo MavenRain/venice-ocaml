@@ -47,6 +47,7 @@ import base64
 import hashlib
 import json
 import pathlib
+import re
 import struct
 import sys
 
@@ -60,6 +61,9 @@ v4_path = fixtures / "tdx_quote_v4.bin"
 v5_path = fixtures / "tdx_quote_v5.bin"
 collateral_json_path = fixtures / "collateral" / "tdx_quote_collateral.json"
 root_ca_path = fixtures / "collateral" / "TrustedRootCA.der"
+
+# The M23 suite the group (f) pins are QUOTATIONS of (D11).
+suite_path = root / "test" / "test_quotex.ml"
 
 fail = 0
 
@@ -120,6 +124,106 @@ def u16(b: bytes, off: int) -> int:
 def u32(b: bytes, off: int) -> int:
     """The little-endian u32 at an absolute offset."""
     return struct.unpack_from("<I", b, off)[0]
+
+
+# ---------- the M23 suite matcher (D11) -------------------------------
+#
+# strip_ocaml_comments, check_rows and the LABEL pattern are copied
+# VERBATIM from harness/diff_gcm.py:559, :585 and :626. A suite pin that
+# a later edit moves into a comment, into an unread top-level let or
+# into a row NAME then sits inside no check row, and group (f) below
+# turns the gate RED.
+
+
+def strip_ocaml_comments(text: str) -> str:
+    """Replace every (* ... *) comment with one space, nesting aware."""
+    out = []
+    depth = 0
+    i = 0
+    end = len(text)
+    while i < end:
+        if text.startswith("(*", i):
+            depth += 1
+            i += 2
+            continue
+        if text.startswith("*)", i) and depth > 0:
+            depth -= 1
+            i += 2
+            out.append(" ")
+            continue
+        if depth == 0:
+            out.append(text[i])
+        i += 1
+    return "".join(out)
+
+
+ROW_START = re.compile(r'^\s*(?:\[\s*)?\(\s*"')
+TOP_LEVEL = re.compile(r"^\S")
+
+
+def check_rows(text: str) -> list:
+    """Split the stripped suite into check rows.
+
+    A row opens on an indented `( "label",` line and closes at the next
+    row or at the next column-zero definition, so a constant sitting in
+    a top-level let is outside every row.
+    """
+    rows = []
+    current = None
+    for line in text.splitlines():
+        if ROW_START.match(line):
+            if current is not None:
+                rows.append("\n".join(current))
+            current = [line]
+        elif current is not None:
+            if TOP_LEVEL.match(line):
+                rows.append("\n".join(current))
+                current = None
+            else:
+                current.append(line)
+    if current is not None:
+        rows.append("\n".join(current))
+    return rows
+
+
+LABEL = re.compile(r'^\s*(?:\[\s*)?\(\s*"(?:[^"\\]|\\.)*"')
+
+
+def suite_bodies() -> list:
+    """Every check row of test/test_quotex.ml, with its NAME removed.
+
+    The name is dropped so a value that only appears in a row TITLE
+    never satisfies a pin.
+    """
+    if not suite_path.is_file():
+        return []
+    stripped = strip_ocaml_comments(suite_path.read_text())
+    return [LABEL.sub("", row, count=1) for row in check_rows(stripped)]
+
+
+def in_row(bodies: list, needles: list) -> bool:
+    """True when ONE check row holds EVERY needle of a pin."""
+    return any(all(x in body for x in needles) for body in bodies)
+
+
+# ---------- the group (f) recompute, struct-free (D11) ----------------
+#
+# These two readers share no cursor with lib/quotex.ml and no line with
+# the struct-based u16 and u32 above, so the oracle and the unit can
+# only agree by agreeing on the BYTES.
+
+
+def le(b: bytes, off: int, size: int) -> int:
+    """A little-endian integer of `size` bytes at an ABSOLUTE offset."""
+    return int.from_bytes(b[off:off + size], "little")
+
+
+def marker_blocks(window: bytes, marker: bytes) -> list:
+    """Cut a PEM window marker to marker, the last block to the end."""
+    starts = [i for i in range(len(window) - len(marker) + 1)
+              if window[i:i + len(marker)] == marker]
+    ends = starts[1:] + [len(window)]
+    return [window[a:b] for (a, b) in zip(starts, ends)]
 
 
 # Standard-library Keccak oracle reused from harness/diff_keccak.py.
@@ -605,6 +709,127 @@ def fixture_mode() -> int:
     require("the QE report signature sits at 1154",
             V4_QE_SIGNATURE_OFF + 64 == V4_AUTH_SIZE_OFF)
     group("(e) v4 qe binding value", before)
+
+    # ---------- pin (f): the M23 suite pins (D11 as amended by A17) ---
+    #
+    # Every value of the test/test_quotex.ml groups (b) to (e) is
+    # recomputed HERE from the fixture bytes, with absolute offsets and
+    # no struct call, and is then REQUIRED to sit inside a CHECK ROW of
+    # the suite beside the accessor that produces it. The D7 arithmetic
+    # and the W7 block lengths are DERIVED and never quoted, so a suite
+    # that copies a wrong constant turns the gate RED instead of
+    # agreeing with itself.
+    before = fail
+    f_signed = v4[0:632]
+    f_signed_sha = hashlib.sha256(f_signed).hexdigest()
+    f_sdl = le(v4, 632, 4)
+    f_end = 636 + f_sdl
+    f_surplus = len(v4) - f_end
+    f_signature = v4[636:700]
+    f_att_key = v4[700:764]
+    f_cert_key_type = le(v4, 764, 2)
+    f_cert_size = le(v4, 766, 4)
+    f_qe_report = v4[770:1154]
+    f_qe_report_data = v4[1090:1154]
+    f_qe_sig = v4[1154:1218]
+    f_auth_size = le(v4, 1218, 2)
+    f_auth_data = v4[1220:1220 + f_auth_size]
+    f_inner_off = 1220 + f_auth_size
+    f_inner_type = le(v4, f_inner_off, 2)
+    f_inner_size = le(v4, f_inner_off + 2, 4)
+    f_pem = v4[f_inner_off + 6:f_inner_off + 6 + f_inner_size]
+    f_blocks = marker_blocks(f_pem, PEM_MARKER)
+
+    # The two D7 equalities, derived from the SIZES of the section
+    # fields: 134 is the signature, the attestation key, the
+    # cert_key_type word and the cert_size word; 456 is the QE report,
+    # the QE report signature, the qe_auth_size word, the inner type
+    # word and the inner size word.
+    f_cert_overhead = 64 + 64 + 2 + 4
+    f_inner_overhead = 384 + 64 + 2 + 2 + 4
+    require("(f) cert_size is signature_data_len minus the cert overhead",
+            f_cert_size == f_sdl - f_cert_overhead)
+    require("(f) inner_size is cert_size minus the inner overhead and "
+            "qe_auth_size",
+            f_inner_size == f_cert_size - f_inner_overhead - f_auth_size)
+    require("(f) the quote structure ends inside the fixture",
+            f_end <= len(v4))
+    require("(f) the PEM window cuts into three marker blocks",
+            len(f_blocks) == 3)
+    require("(f) the three block lengths sum to inner_size",
+            sum(len(x) for x in f_blocks) == f_inner_size)
+    require("(f) block 3 ends with the trailing NUL of W7",
+            len(f_blocks) == 3 and f_blocks[2][-1:] == b"\x00")
+
+    # The END marker is LOCATED in block 1 and never typed here.
+    f_end_at = f_blocks[0].find(b"-----END") if f_blocks else -1
+    require("(f) block 1 holds an END marker", f_end_at >= 0)
+    f_begin_text = f_pem[0:len(PEM_MARKER)].decode("ascii", "replace")
+    f_end_text = f_blocks[0][
+        f_end_at:f_end_at + len(PEM_MARKER) - 2
+    ].decode("ascii", "replace") if f_end_at >= 0 else ""
+
+    # One entry per suite value. The first needle is the ACCESSOR the
+    # row must call and the second is the recomputed value, and BOTH
+    # must sit in the SAME check row, so a value pinned against the
+    # wrong field never satisfies its own pin.
+    f_pins = [
+        ("version", ["version", str(le(v4, 0, 2))]),
+        ("att_key_type", ["att_key_type", str(le(v4, 2, 2))]),
+        ("tee_type", ["tee_type", str(le(v4, 4, 4))]),
+        ("header_u16_at_8", ["header_u16_at_8", str(le(v4, 8, 2))]),
+        ("header_u16_at_10", ["header_u16_at_10", str(le(v4, 10, 2))]),
+        ("qe_vendor_id", ["qe_vendor_id", hx(v4[12:28])]),
+        ("user_data", ["user_data", hx(v4[28:48])]),
+        ("tee_tcb_svn", ["tee_tcb_svn", hx(v4[48:64])]),
+        ("mr_seam", ["mr_seam", hx(v4[64:112])]),
+        ("mrsigner_seam", ["mrsigner_seam", hx(v4[112:160])]),
+        ("seam_attributes", ["seam_attributes", f"{le(v4, 160, 8)}L"]),
+        ("td_attributes", ["td_attributes", f"{le(v4, 168, 8)}L"]),
+        ("xfam", ["xfam", f"{le(v4, 176, 8)}L"]),
+        ("mr_td", ["mr_td", hx(v4[184:232])]),
+        ("mr_config_id", ["mr_config_id", hx(v4[232:280])]),
+        ("mr_owner", ["mr_owner", hx(v4[280:328])]),
+        ("mr_owner_config", ["mr_owner_config", hx(v4[328:376])]),
+        ("rt_mr0", ["rt_mr0", hx(v4[376:424])]),
+        ("rt_mr1", ["rt_mr1", hx(v4[424:472])]),
+        ("rt_mr2", ["rt_mr2", hx(v4[472:520])]),
+        ("rt_mr3", ["rt_mr3", hx(v4[520:568])]),
+        ("report_data", ["report_data", hx(v4[568:632])]),
+        ("signed_region length", ["signed_region", str(len(f_signed))]),
+        ("signed_region sha256", ["signed_region", f_signed_sha]),
+        ("signature_data_len", ["signature_data_len", str(f_sdl)]),
+        ("surplus", ["surplus", str(f_surplus)]),
+        ("signature", ["signature", hx(f_signature)]),
+        ("attestation_key", ["attestation_key", hx(f_att_key)]),
+        ("cert_key_type", ["cert_key_type", str(f_cert_key_type)]),
+        ("cert_size", ["cert_size", str(f_cert_size)]),
+        ("qe_report length", ["qe_report", str(len(f_qe_report))]),
+        ("qe_report_data", ["qe_report_data", hx(f_qe_report_data)]),
+        ("qe_report_signature", ["qe_report_signature", hx(f_qe_sig)]),
+        ("qe_auth_size", ["qe_auth_size", str(f_auth_size)]),
+        ("qe_auth_data", ["qe_auth_data", hx(f_auth_data)]),
+        ("inner_cert_type", ["inner_cert_type", str(f_inner_type)]),
+        ("inner_size", ["inner_size", str(f_inner_size)]),
+        ("pem_window length", ["pem_window", str(len(f_pem))]),
+        ("pem_chain count", ["pem_chain", str(len(f_blocks))]),
+        ("pem_chain BEGIN prefix", ["pem_chain", f_begin_text]),
+        ("pem_chain END substring", ["pem_chain", f_end_text]),
+        ("pem_chain block 3 trailing NUL", ["pem_chain", "\\000"]),
+    ] + [
+        (f"pem_chain block {n} length", ["pem_chain", str(len(block))])
+        for (n, block) in enumerate(f_blocks, start=1)
+    ]
+
+    f_bodies = suite_bodies()
+    if not f_bodies:
+        require(f"(f) the M23 suite holds no check row: {suite_path}",
+                False)
+    else:
+        for (f_name, f_needles) in f_pins:
+            require(f"(f) suite pin {f_name} sits in no check row",
+                    in_row(f_bodies, f_needles))
+    group("(f) M23 suite pins", before)
 
     return fail
 

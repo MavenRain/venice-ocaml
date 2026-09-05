@@ -6,7 +6,7 @@
    chat response domain, M11 the SSE stream and chunk domains, M13
    the key, request, wire-head and transport domains, M14 the stream
    accumulator domain, M15 the never-sent transport failure and the
-   client's own rejections. *)
+   client's own rejections, M23 the quote domain. *)
 
 type t =
   | Hex_invalid of string
@@ -32,6 +32,10 @@ type t =
   (* M15 D9: the client's own rejection (a policy or body window, a
      media type, the total classify arm), never a server verdict. *)
   | Client_invalid of string
+  (* M23 D5: the TDX quote decoder refused the bytes. The reason names
+     the check that failed and comes from a CLOSED vocabulary, so the
+     suite and the harness can pin every rejection text. *)
+  | Quote_invalid of string
 
 let to_string (e : t) : string =
   match e with
@@ -53,3 +57,4 @@ let to_string (e : t) : string =
   | Stream_invalid s -> "stream: " ^ s
   | Transport_unreachable s -> "unreachable: " ^ s
   | Client_invalid s -> "client: " ^ s
+  | Quote_invalid s -> "quote: " ^ s

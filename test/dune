@@ -112,3 +112,35 @@
  (name test_gcmx)
  (modules test_gcmx)
  (libraries venice))
+
+; M23 embeds the two TDX fixtures at BUILD time (D2).  embed.exe is a
+; host generator: it reads one fixture and prints one OCaml line that
+; binds the bytes as a string literal.  gates.sh runs a suite from the
+; repository root and dune test runs it from _build/default/test, so a
+; relative fixture path would be correct in at most one of the two;  an
+; embedded literal is correct in both, and a missing or renamed fixture
+; breaks the BUILD instead of reddening the suite.
+(executable
+ (name embed)
+ (modules embed))
+
+(rule
+ (targets fixture_v4.ml)
+ (deps ../fixtures/tdx_quote_v4.bin)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run %{exe:embed.exe} %{deps}))))
+
+(rule
+ (targets fixture_v5.ml)
+ (deps ../fixtures/tdx_quote_v5.bin)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run %{exe:embed.exe} %{deps}))))
+
+(test
+ (name test_quotex)
+ (modules test_quotex fixture_v4 fixture_v5)
+ (libraries venice sha2))

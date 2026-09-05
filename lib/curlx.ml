@@ -48,7 +48,8 @@ let detail (e : Errx.t) : string =
   | Errx.Head_invalid _ | Errx.Chat_invalid _ | Errx.Resp_invalid _
   | Errx.Sse_invalid _ | Errx.Chunk_invalid _ | Errx.Key_invalid _
   | Errx.Req_invalid _ | Errx.Wire_invalid _ | Errx.Stream_invalid _
-  | Errx.Transport_unreachable _ | Errx.Client_invalid _ ->
+  | Errx.Transport_unreachable _ | Errx.Client_invalid _
+  | Errx.Quote_invalid _ ->
     Errx.to_string e
 
 let transport (msg : string) : ('a, Errx.t) result =
