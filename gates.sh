@@ -10,7 +10,7 @@ cd "$here"
 dunecho build
 
 # Test suites; grows one entry per milestone that lands a suite.
-suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx test_hmacx test_keccakx test_p256x"
+suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx test_hmacx test_keccakx test_p256x test_secpx"
 # The capture sits in an if-condition so a failing suite cannot abort
 # the script (set -e) before its output and name reach the log; the
 # FAIL-text case still guards a suite that prints FAIL yet exits 0.
@@ -60,6 +60,16 @@ fi
 # result before it reads a pin (the rfc6979 self-check line).
 "$py" "$here/harness/diff_p256.py"
 
+# The M20 differential harness over test_secpx.ml. Its secp256k1 runs in
+# AFFINE coordinates over python integers and shares no formula with the
+# Jacobian unit, and it VERIFIES every embedded Wycheproof vector and
+# re-signs its own generated vector before it reads a pin (the
+# wycheproof self-check and generated-vector self-check lines). Its pin
+# groups are (a) the curve constants, (b) the Wycheproof ECDSA subset,
+# (c) the Wycheproof ECDH subset, (d) the generated vectors and (e) the
+# boundary values.
+"$py" "$here/harness/diff_secp.py"
+
 # Model check + correspondence (M35..M37).
 if [ -x "$here/model/check.sh" ]; then
   "$here/model/check.sh"
@@ -104,7 +114,20 @@ fi
 # formulas are carried as a record PARAMETER, so no helper reads a
 # top-level constant under trap 2. It links nothing new, because sha2
 # arrived at M17, so it joins the list after keccakx.ml.
-core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml hmacx.ml keccakx.ml p256x.ml"
+# secpx.ml is the FIFTH crypto-tower module (M20): pure and sans-io in
+# the same shape, no Bytes, no Buffer, no Array, no reference cell, no
+# division line and no remainder either, because every reduction and
+# every inverse goes through the limbsx helpers with the modulus as an
+# explicit argument. The twelve curve constants of secp256k1 ride a
+# record PARAMETER, so no helper reads a top-level constant under trap
+# 2, and the trap fires CROSS-MODULE, so this file is linted beside
+# limbsx.ml and never alone. ONE fixed-shape 256-step Montgomery ladder
+# serves verify, Pubkey.of_scalar, shared_point and shared_x: it makes
+# 256 addition calls and 256 doubling calls for every scalar, so the
+# CALL shape never depends on a secret bit, although the
+# field-operation count is not constant. It links nothing new, so it
+# joins the list after p256x.ml.
+core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml hmacx.ml keccakx.ml p256x.ml secpx.ml"
 if [ -n "$core" ]; then
   # The list is echoed so the gate LOG proves which modules zxlint
   # covered; zxlint itself prints only a verdict.

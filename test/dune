@@ -97,3 +97,8 @@
  (name test_p256x)
  (modules test_p256x)
  (libraries venice))
+
+(test
+ (name test_secpx)
+ (modules test_secpx)
+ (libraries venice))
