@@ -71,6 +71,9 @@ policy_suite_path = root / "test" / "test_policyx.ml"
 # The M25 suite the group (h) pins are QUOTATIONS of (D11).
 sig_suite_path = root / "test" / "test_sigx.ml"
 
+# The M26 suite the group (i) pins are QUOTATIONS of (D11).
+cert_suite_path = root / "test" / "test_derx.ml"
+
 fail = 0
 
 
@@ -736,6 +739,183 @@ def pck_leaf_xy(pem_window: bytes):
     return (hx(point[0:32]), hx(point[32:64]))
 
 
+# ---------- the group (i) DER walk, struct-free (D12) -----------------
+#
+# A SECOND DER reader, written for the harness alone. It shares no
+# cursor and no line with lib/derx.ml, so the unit and the oracle can
+# only agree by agreeing on the BYTES. It reads the short definite form
+# and the long definite form and nothing else, which is all the three
+# fixture certificates carry. The affine P-256 above and pck_leaf_xy
+# are REUSED by the group (i) legs and never duplicated.
+
+TBS_AT = 4
+POINT_LEN = 65
+SGX_EXT_OID = bytes.fromhex("2a864886f84d010d01")
+SGX_TCB_TAIL = 0x02
+SGX_PCE_ID_TAIL = 0x03
+SGX_FMSPC_TAIL = 0x04
+TCB_PCESVN_TAIL = 0x11
+TCB_CPUSVN_TAIL = 0x12
+BEGIN_TEXT = "-----BEGIN CERTIFICATE-----"
+END_TEXT = "-----END CERTIFICATE-----"
+
+
+def der_elem(b: bytes, off: int):
+    """One element at off, as (tag, offset, header size, content length)."""
+    first = b[off + 1]
+    if first < 0x80:
+        return (b[off], off, 2, first)
+    count = first - 0x80
+    return (b[off], off, 2 + count,
+            int.from_bytes(b[off + 2:off + 2 + count], "big"))
+
+
+def der_siblings(b: bytes, off: int, stop: int) -> list:
+    """Every element between off and stop, in wire order."""
+    out = []
+    while off < stop:
+        node = der_elem(b, off)
+        out.append(node)
+        off += node[2] + node[3]
+    return out
+
+
+def der_kids(b: bytes, node) -> list:
+    """The elements inside one element, in wire order."""
+    (_, off, hdr, size) = node
+    return der_siblings(b, off + hdr, off + hdr + size)
+
+
+def der_body(b: bytes, node) -> bytes:
+    """The CONTENT bytes of one element."""
+    (_, off, hdr, size) = node
+    return b[off + hdr:off + hdr + size]
+
+
+def der_whole(b: bytes, node) -> bytes:
+    """The element bytes, header included, which is a signed window."""
+    (_, off, hdr, size) = node
+    return b[off:off + hdr + size]
+
+
+def pem_body(block: bytes) -> str:
+    """The base64 body of one PEM block, every newline removed."""
+    text = block.decode("ascii", "ignore")
+    opened = text.split(BEGIN_TEXT, 1)
+    if len(opened) != 2:
+        return ""
+    closed = opened[1].split(END_TEXT, 1)
+    if len(closed) != 2:
+        return ""
+    return "".join(closed[0].split())
+
+
+def chain_ders(pem_window: bytes) -> list:
+    """The DER of every PEM block of one window, in wire order."""
+    return [base64.b64decode(pem_body(x))
+            for x in marker_blocks(pem_window, PEM_MARKER)
+            if pem_body(x)]
+
+
+def cert_fields(der: bytes) -> dict:
+    """The tbs window and the eight tbs children of one certificate.
+
+    The tbs element sits at TBS_AT in all three fixture certificates
+    and its children are version, serialNumber, signature, issuer,
+    validity, subject, subjectPublicKeyInfo and the a3 extensions.
+    """
+    tbs = der_elem(der, TBS_AT)
+    kids = der_kids(der, tbs)
+    outer = der_kids(der, der_elem(der, 0))
+    return {
+        "tbs": tbs,
+        "tbs_window": der_whole(der, tbs),
+        "version": der_whole(der, kids[0]),
+        "serial": der_body(der, kids[1]),
+        "tbs_alg": der_whole(der, kids[2]),
+        "issuer": der_whole(der, kids[3]),
+        "validity": kids[4],
+        "subject": der_whole(der, kids[5]),
+        "spki": kids[6],
+        "exts": kids[7],
+        "outer_alg": der_whole(der, outer[1]),
+        "sig_bits": outer[2],
+    }
+
+
+def sig_halves(der: bytes, bits) -> dict:
+    """The r and s CONTENT bytes inside one signature BIT STRING.
+
+    The BIT STRING carries ZERO unused bits, so the SEQUENCE of the two
+    INTEGER halves opens one byte after the content starts.
+    """
+    (_, off, hdr, _) = bits
+    inner = der_elem(der, off + hdr + 1)
+    kids = der_kids(der, inner)
+    return {
+        "unused": der_body(der, bits)[0],
+        "inner": inner,
+        "r": der_body(der, kids[0]),
+        "s": der_body(der, kids[1]),
+    }
+
+
+def spki_point(der: bytes, spki) -> dict:
+    """The 65 SEC 1 bytes of one SubjectPublicKeyInfo and their offset."""
+    kids = der_kids(der, spki)
+    (_, off, hdr, size) = kids[1]
+    at = off + hdr + 1
+    return {
+        "alg": der_whole(der, kids[0]),
+        "bits_len": size,
+        "unused": der[off + hdr],
+        "at": at,
+        "point": der[at:at + POINT_LEN],
+    }
+
+
+def ext_rows(der: bytes, exts) -> list:
+    """One row per extension of one a3 element, in wire order.
+
+    A row carries the OID CONTENT bytes, the OID ELEMENT offset, the
+    critical flag, which is TRUE exactly when the BOOLEAN is present,
+    and the extnValue node.
+    """
+    rows = []
+    for ext in der_kids(der, der_kids(der, exts)[0]):
+        kids = der_kids(der, ext)
+        rows.append({
+            "oid": der_body(der, kids[0]),
+            "oid_at": kids[0][1],
+            "critical": len(kids) == 3,
+            "flag": der_body(der, kids[1]) if len(kids) == 3 else b"",
+            "value": kids[-1],
+        })
+    return rows
+
+
+def sgx_members(b: bytes, node) -> dict:
+    """The members of one SGX SEQUENCE, keyed by their LAST OID byte."""
+    out = {}
+    for member in der_kids(b, node):
+        kids = der_kids(b, member)
+        out[der_body(b, kids[0])[-1]] = kids[1]
+    return out
+
+
+def ext_value(b: bytes, rows: list, oid_text: str) -> bytes:
+    """The extnValue CONTENT bytes of the row whose OID matches."""
+    node = ext_node(rows, oid_text)
+    return b"" if node is None else der_body(b, node)
+
+
+def ext_node(rows: list, oid_text: str):
+    """The extnValue NODE of the row whose OID matches, else None."""
+    wanted = bytes.fromhex(oid_text)
+    matched = [row["value"] for row in rows if row["oid"] == wanted]
+    return matched[0] if matched else None
+
+
 # ---------- fixture mode, the default and the gate --------------------
 
 
@@ -1092,6 +1272,340 @@ def fixture_mode() -> int:
             require(f"(h) suite pin {h_name} sits in no check row",
                     in_row(h_bodies, h_needles))
     group("(h) M25 suite pins", before)
+
+    # ---------- group (i), the M26 chain pins (D12) --------------------
+    #
+    # Every value below is recomputed HERE from the fixture bytes by the
+    # second DER reader above: the W1 block shape through marker_blocks,
+    # the W2 sizes and digests through a base64 decode and hashlib, the
+    # W3 pin against fixtures/collateral/TrustedRootCA.der on disk, the
+    # W4 OIDs and points through the tbs walk, the W5 halves and BOTH
+    # chain legs through the affine P-256 of group (h), the W6 Name
+    # compares as RAW TLV bytes, the W7 time strings out of the two
+    # Validity elements, and the W8 extension rows and SGX members
+    # through an OID walk. Nothing here is read from lib/derx.ml, so the
+    # unit and the oracle can only agree by agreeing on the BYTES. Each
+    # recomputed value then has to sit inside a check row of
+    # test/test_derx.ml, whose NAME the matcher strips first.
+    before = fail
+
+    i_auth = le(v4, 1218, 2)
+    i_inner = 1220 + i_auth
+    i_pem_off = i_inner + 6
+    i_pem = v4[i_pem_off:i_pem_off + le(v4, i_inner + 2, 4)]
+    pin("(i) the pem window offset", str(i_pem_off), "1258")
+    pin("(i) the pem window length", str(len(i_pem)), "3678")
+    pin("(i) the pem window nul count", str(i_pem.count(b"\x00")), "1")
+    pin("(i) the pem window carriage return count",
+        str(i_pem.count(b"\r")), "0")
+
+    i_blocks = marker_blocks(i_pem, PEM_MARKER)
+    i_lens = [len(x) for x in i_blocks]
+    i_offs = [sum(i_lens[0:k]) for k in range(len(i_lens))]
+    pin("(i) the block count", str(len(i_blocks)), "3")
+    pin("(i) the block lengths", str(i_lens), "[1773, 956, 949]")
+    pin("(i) the block offsets", str(i_offs), "[0, 1773, 2729]")
+    pin("(i) the newlines per whole block",
+        str([x.count(b"\n") for x in i_blocks]), "[29, 16, 16]")
+    i_between = [x.split(PEM_MARKER, 1)[-1].split(END_TEXT.encode(), 1)[0]
+                 for x in i_blocks]
+    pin("(i) the newlines between the markers",
+        str([x.count(b"\n") for x in i_between]), "[28, 15, 15]")
+    i_b64 = [pem_body(x) for x in i_blocks]
+    pin("(i) the base64 body lengths",
+        str([len(x) for x in i_b64]), "[1692, 888, 880]")
+    pin("(i) the base64 pad counts",
+        str([x.count("=") for x in i_b64]), "[0, 0, 1]")
+    pin("(i) the block 3 tail bytes", hx(i_blocks[2][-10:]),
+        "4154452d2d2d2d2d0a00")
+
+    i_ders = chain_ders(i_pem)
+    i_der_sha = [hashlib.sha256(x).hexdigest() for x in i_ders]
+    pin("(i) the der sizes", str([len(x) for x in i_ders]),
+        "[1269, 666, 659]")
+    pin("(i) the leaf der digest", i_der_sha[0],
+        "c2fb4124d84998cc005c38e13766843777e1c47a1e0b89ad720fd70c2e90927e")
+    pin("(i) the intermediate der digest", i_der_sha[1],
+        "22eb770dca215b607b5ccfc21a672b1da5cc660b1ad0365020567979edcaa0e1")
+    pin("(i) the root der digest", i_der_sha[2],
+        "44a0196b2b99f889b8e149e95b807a350e7424964399e885a7cbb8ccfab674d3")
+
+    i_certs = [cert_fields(x) for x in i_ders]
+    i_tbs = [x["tbs_window"] for x in i_certs]
+    i_tbs_sha = [hashlib.sha256(x).hexdigest() for x in i_tbs]
+    pin("(i) the tbs element sizes", str([len(x) for x in i_tbs]),
+        "[1178, 577, 568]")
+    pin("(i) the tbs content lengths",
+        str([x["tbs"][3] for x in i_certs]), "[1174, 573, 564]")
+    pin("(i) the leaf tbs digest", i_tbs_sha[0],
+        "504501ea2c2013ec9e2f8b4f78773c63675899d73f2036e0671c4a3e73ed6a9f")
+    pin("(i) the intermediate tbs digest", i_tbs_sha[1],
+        "581d1ff77ba97123a71722be563b50238f861198a174eb3e2d32cd8d5b710e70")
+    pin("(i) the root tbs digest", i_tbs_sha[2],
+        "0e1c8ad1fad9254ad1d0bc362c4c83dad27f32fc903cbb9cda58349ec2a4626a")
+    pin("(i) the version elements",
+        str(sorted({hx(x["version"]) for x in i_certs})), "['a003020102']")
+    pin("(i) the serial content lengths",
+        str([len(x["serial"]) for x in i_certs]), "[20, 21, 20]")
+    require("(i) the intermediate serial carries a leading sign byte",
+            i_certs[1]["serial"][0] == 0)
+    require("(i) every outer signatureAlgorithm is ecdsa-with-SHA256",
+            all(hx(x["outer_alg"]) == "300a06082a8648ce3d040302"
+                for x in i_certs))
+    require("(i) every tbs signatureAlgorithm equals the outer one",
+            all(x["tbs_alg"] == x["outer_alg"] for x in i_certs))
+
+    i_root_file = read_fixture(root_ca_path)
+    require("(i) block 3 equals the pinned Intel SGX Root CA file",
+            i_ders[2] == i_root_file)
+    pin("(i) the pinned root length", str(len(i_root_file)), "659")
+    require("(i) the root issuer and subject are the same raw TLV",
+            i_certs[2]["issuer"] == i_certs[2]["subject"])
+
+    i_points = [spki_point(d, c["spki"]) for (d, c) in zip(i_ders, i_certs)]
+    i_xy = [(hx(x["point"][1:33]), hx(x["point"][33:65])) for x in i_points]
+    pin("(i) the point offsets", str([x["at"] for x in i_points]),
+        "[333, 326, 317]")
+    require("(i) every spki bit string holds 66 bytes and no unused bit",
+            all(x["bits_len"] == 66 and x["unused"] == 0 for x in i_points))
+    require("(i) every point is 65 bytes and opens with the SEC 1 lead 04",
+            all(len(x["point"]) == POINT_LEN and x["point"][0] == 0x04
+                for x in i_points))
+    require("(i) every spki algorithm names ecPublicKey and prime256v1",
+            all(bytes.fromhex("2a8648ce3d0201") in x["alg"]
+                and bytes.fromhex("2a8648ce3d030107") in x["alg"]
+                for x in i_points))
+    pin("(i) the leaf point x", i_xy[0][0],
+        "1720fa04edef8680bfb748fd965af93d61a417a8f1f29910e8b88b3666dfff6d")
+    pin("(i) the leaf point y", i_xy[0][1],
+        "2b2660f3288f203356f90253a7f6f76616e24212c22cfcc3e66d681f971c9769")
+    pin("(i) the intermediate point x", i_xy[1][0],
+        "35207feeddb595748ed82bb3a71c3be1e241ef61320c6816e6b5c2b71dad5532")
+    pin("(i) the intermediate point y", i_xy[1][1],
+        "eaea12a4eb3f948916429ea47ba6c3af82a15e4b19664e52657939a2d96633de")
+    pin("(i) the root point x", i_xy[2][0],
+        "0ba9c4c0c0c86193a3fe23d6b02cda10a8bbd4e88e48b4458561a36e705525f5")
+    pin("(i) the root point y", i_xy[2][1],
+        "67918e2edc88e40d860bd0cc4ee26aacc988e505a953558c453f6b0904ae7394")
+    require("(i) the leaf point equals the M25 pck leaf key of W9",
+            i_xy[0] == pck_leaf_xy(i_pem))
+
+    # The two chain legs, VERIFIED and never quoted, plus the four W5
+    # controls. They run before the suite pins, so a fixture swap
+    # reddens the arithmetic first.
+    i_sigs = [sig_halves(d, c["sig_bits"]) for (d, c) in zip(i_ders, i_certs)]
+    i_rs = [(hx(x["r"][-32:]), hx(x["s"][-32:])) for x in i_sigs]
+    pin("(i) the signature bit string offsets",
+        str([x["sig_bits"][1] for x in i_certs]), "[1194, 593, 584]")
+    pin("(i) the inner sequence content lengths",
+        str([x["inner"][3] for x in i_sigs]), "[70, 68, 70]")
+    pin("(i) the r and s content lengths",
+        str([(len(x["r"]), len(x["s"])) for x in i_sigs]),
+        "[(33, 33), (32, 32), (33, 33)]")
+    pin("(i) the r and s first content bytes",
+        str([(x["r"][0], x["s"][0]) for x in i_sigs]),
+        "[(0, 0), (94, 38), (0, 0)]")
+    require("(i) every signature bit string carries zero unused bits",
+            all(x["unused"] == 0 for x in i_sigs))
+    require("(i) the leaf tbs window verifies under the intermediate key",
+            p256_verify_message(i_xy[1][0], i_xy[1][1], i_rs[0][0],
+                                i_rs[0][1], i_tbs[0]))
+    require("(i) the intermediate tbs window verifies under the root key",
+            p256_verify_message(i_xy[2][0], i_xy[2][1], i_rs[1][0],
+                                i_rs[1][1], i_tbs[1]))
+    require("(i) the root tbs window verifies under its OWN key, which "
+            "derx never checks",
+            p256_verify_message(i_xy[2][0], i_xy[2][1], i_rs[2][0],
+                                i_rs[2][1], i_tbs[2]))
+    require("(i) control the leaf tbs window fails under the root key",
+            not p256_verify_message(i_xy[2][0], i_xy[2][1], i_rs[0][0],
+                                    i_rs[0][1], i_tbs[0]))
+    require("(i) control the intermediate tbs window fails under the leaf "
+            "key",
+            not p256_verify_message(i_xy[0][0], i_xy[0][1], i_rs[1][0],
+                                    i_rs[1][1], i_tbs[1]))
+    require("(i) control one flipped tbs byte breaks the leaf leg",
+            not p256_verify_message(
+                i_xy[1][0], i_xy[1][1], i_rs[0][0], i_rs[0][1],
+                bytes([i_tbs[0][0] ^ 1]) + i_tbs[0][1:]))
+    require("(i) control the twin s verifies, so no low-s rule is owed",
+            p256_verify_message(
+                i_xy[1][0], i_xy[1][1], i_rs[0][0],
+                hx((P256_N - int(i_rs[0][1], 16)).to_bytes(32, "big")),
+                i_tbs[0]))
+    pin("(i) the low-s answers",
+        str([int(x[1], 16) * 2 < P256_N for x in i_rs]),
+        "[False, True, False]")
+
+    require("(i) the leaf issuer equals the intermediate subject",
+            i_certs[0]["issuer"] == i_certs[1]["subject"])
+    require("(i) the intermediate issuer equals the root subject",
+            i_certs[1]["issuer"] == i_certs[2]["subject"])
+    require("(i) control the leaf subject differs from the intermediate "
+            "subject, so the compare is not vacuous",
+            i_certs[0]["subject"] != i_certs[1]["subject"])
+    pin("(i) the issuer element offsets",
+        str([der_kids(d, c["tbs"])[3][1] for (d, c) in zip(i_ders, i_certs)]),
+        "[47, 48, 47]")
+    pin("(i) the subject element offsets",
+        str([der_kids(d, c["tbs"])[5][1] for (d, c) in zip(i_ders, i_certs)]),
+        "[193, 186, 185]")
+    pin("(i) the name element lengths",
+        str([(len(x["issuer"]), len(x["subject"])) for x in i_certs]),
+        "[(114, 114), (106, 114), (106, 106)]")
+
+    i_val = [der_kids(d, c["validity"]) for (d, c) in zip(i_ders, i_certs)]
+    i_times = [[der_body(d, n).decode("ascii", "ignore") for n in row]
+               for (d, row) in zip(i_ders, i_val)]
+    pin("(i) the six validity strings", str(i_times),
+        "[['250206232551Z', '320206232551Z'], "
+        "['180521105010Z', '330521105010Z'], "
+        "['180521104510Z', '491231235959Z']]")
+    pin("(i) the validity element offsets",
+        str([[n[1] for n in row] for row in i_val]),
+        "[[163, 178], [156, 171], [155, 170]]")
+    require("(i) every validity element is UTCTime with 13 content bytes",
+            all(n[0] == 0x17 and n[3] == 13 for row in i_val for n in row))
+    i_pivot = [("20" if int(t[0:2]) < 50 else "19") + t[0:12]
+               for row in i_times for t in row]
+    pin("(i) the pivoted witnesses of RFC 5280 4.1.2.5.1", str(i_pivot),
+        "['20250206232551', '20320206232551', '20180521105010', "
+        "'20330521105010', '20180521104510', '20491231235959']")
+
+    i_exts = [ext_rows(d, c["exts"]) for (d, c) in zip(i_ders, i_certs)]
+    pin("(i) the extension counts", str([len(x) for x in i_exts]),
+        "[6, 5, 5]")
+    pin("(i) the leaf extension oid offsets",
+        str([x["oid_at"] for x in i_exts[0]]),
+        "[408, 441, 550, 581, 597, 613]")
+    pin("(i) the leaf extension value lengths",
+        str([x["value"][3] for x in i_exts[0]]),
+        "[24, 100, 22, 4, 2, 554]")
+    pin("(i) the leaf critical flags",
+        str([x["critical"] for x in i_exts[0]]),
+        "[False, False, False, True, True, False]")
+    pin("(i) the intermediate extension oid offsets",
+        str([x["oid_at"] for x in i_exts[1]]), "[399, 432, 516, 547, 563]")
+    pin("(i) the root extension oid offsets",
+        str([x["oid_at"] for x in i_exts[2]]), "[390, 423, 507, 538, 554]")
+    pin("(i) the ca extension value lengths",
+        str([[x["value"][3] for x in row] for row in i_exts[1:]]),
+        "[[24, 75, 22, 4, 8], [24, 75, 22, 4, 8]]")
+    require("(i) a present critical boolean always encodes ff",
+            all(x["flag"] in (b"", b"\xff") for row in i_exts for x in row))
+    i_ku = [hx(ext_value(d, row, "551d0f")) for (d, row) in zip(i_ders,
+                                                               i_exts)]
+    pin("(i) the key usage values", str(i_ku),
+        "['030206c0', '03020106', '03020106']")
+    i_bc = [hx(ext_value(d, row, "551d13")) for (d, row) in zip(i_ders,
+                                                               i_exts)]
+    pin("(i) the basic constraints values", str(i_bc),
+        "['3000', '30060101ff020100', '30060101ff020101']")
+
+    i_oct = ext_node(i_exts[0], hx(SGX_EXT_OID))
+    pin("(i) the sgx octet string offset", str(i_oct[1]), "624")
+    pin("(i) the sgx octet string content length", str(i_oct[3]), "554")
+    i_seq = der_kids(i_ders[0], i_oct)[0]
+    pin("(i) the sgx sequence offset", str(i_seq[1]), "628")
+    pin("(i) the sgx sequence content length", str(i_seq[3]), "550")
+    i_members = sgx_members(i_ders[0], i_seq)
+    pin("(i) the sgx member tails", str(sorted(i_members.keys())),
+        "[1, 2, 3, 4, 5, 6, 7]")
+    pin("(i) the tcb value element offset",
+        str(i_members[SGX_TCB_TAIL][1]), "680")
+    i_tcb = sgx_members(i_ders[0], i_members[SGX_TCB_TAIL])
+    pin("(i) the tcb member count", str(len(i_tcb)), "18")
+    i_comps = [int.from_bytes(der_body(i_ders[0], i_tcb[k]), "big")
+               for k in range(1, 17)]
+    pin("(i) the sixteen tcb components of RUL-M26-3", str(i_comps),
+        "[3, 3, 2, 2, 4, 1, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0]")
+    i_pcesvn = int.from_bytes(der_body(i_ders[0], i_tcb[TCB_PCESVN_TAIL]),
+                              "big")
+    pin("(i) the pcesvn", str(i_pcesvn), "11")
+    pin("(i) the pcesvn element offset",
+        str(i_tcb[TCB_PCESVN_TAIL][1]), "987")
+    i_cpusvn = hx(der_body(i_ders[0], i_tcb[TCB_CPUSVN_TAIL]))
+    pin("(i) the cpusvn", i_cpusvn, "03030202040100050000000000000000")
+    pin("(i) the cpusvn element offset",
+        str(i_tcb[TCB_CPUSVN_TAIL][1]), "1005")
+    i_pce_id = hx(der_body(i_ders[0], i_members[SGX_PCE_ID_TAIL]))
+    pin("(i) the pce id", i_pce_id, "0000")
+    pin("(i) the pce id element offset",
+        str(i_members[SGX_PCE_ID_TAIL][1]), "1037")
+    i_fmspc = hx(der_body(i_ders[0], i_members[SGX_FMSPC_TAIL]))
+    pin("(i) the fmspc", i_fmspc, "b0c06f000000")
+    pin("(i) the fmspc element offset",
+        str(i_members[SGX_FMSPC_TAIL][1]), "1055")
+    require("(i) the sixteen tcb components equal the cpusvn bytes "
+            "(RUL-M26-3)", hx(bytes(i_comps)) == i_cpusvn)
+    require("(i) no ca certificate carries the sgx extension",
+            all(ext_node(row, hx(SGX_EXT_OID)) is None
+                for row in i_exts[1:]))
+
+    # Each recomputed value now has to sit inside ONE check row of the
+    # M26 suite. A needle list is satisfied by one row that holds EVERY
+    # needle, so the halves of a key or a time and its answer are
+    # needled apart and a row title never satisfies a pin.
+    i_pins = [
+        ("the pem window length", ["pem_window", "3678"]),
+        ("the three block lengths", ["1773", "956", "949"]),
+        ("the leaf der size", ["1269"]),
+        ("the intermediate der size", ["666"]),
+        ("the root der size", ["659"]),
+        ("the leaf der digest", [i_der_sha[0]]),
+        ("the intermediate der digest", [i_der_sha[1]]),
+        ("the root der digest", [i_der_sha[2]]),
+        ("the three tbs element sizes", ["1178", "577", "568"]),
+        ("the leaf tbs digest", [i_tbs_sha[0]]),
+        ("the intermediate tbs digest", [i_tbs_sha[1]]),
+        ("the root tbs digest", [i_tbs_sha[2]]),
+        ("the root pin length", ["root_pin", "659"]),
+        ("the root pin digest", ["root_pin", i_der_sha[2]]),
+        ("the leaf point halves", [i_xy[0][0], i_xy[0][1]]),
+        ("the intermediate point halves", [i_xy[1][0], i_xy[1][1]]),
+        ("the root point halves", [i_xy[2][0], i_xy[2][1]]),
+        ("the pck_key accessor beside the leaf point",
+         ["pck_key", i_xy[0][0]]),
+        ("the leaf signature halves", [i_rs[0][0], i_rs[0][1]]),
+        ("the intermediate signature halves", [i_rs[1][0], i_rs[1][1]]),
+        ("the leaf validity window", [i_pivot[0], i_pivot[1]]),
+        ("the intermediate validity window", [i_pivot[2], i_pivot[3]]),
+        ("the root validity window", [i_pivot[4], i_pivot[5]]),
+        ("the ok witness", ["20260906000000"]),
+        ("the not yet valid witness", ["20240101000000", "not yet valid"]),
+        ("the one second past notAfter witness",
+         ["20320206232552", "expired"]),
+        ("the intermediate expiry witness", ["20330521105011", "expired"]),
+        ("the far future witness", ["20500101000000", "expired"]),
+        ("the utc pivot low row", ["491231235959Z", "20491231235959"]),
+        ("the utc pivot high row", ["500101000000Z", "19500101000000"]),
+        ("the pcesvn", ["pcesvn", str(i_pcesvn)]),
+        ("the cpusvn", ["cpusvn", i_cpusvn]),
+        ("the fmspc", ["fmspc", i_fmspc]),
+        ("the pce id", ["pce_id", i_pce_id]),
+        ("the sixteen tcb components",
+         ["tcb_components", "; ".join(str(x) for x in i_comps)]),
+        ("the tcb components beside the cpusvn bytes",
+         ["tcb_components", "cpusvn"]),
+        ("the leaf key usage value", ["030206c0"]),
+        ("the ca key usage value", ["03020106"]),
+        ("the leaf basic constraints value", ["3000"]),
+        ("the intermediate basic constraints value", ["30060101ff020100"]),
+        ("the root basic constraints value", ["30060101ff020101"]),
+        ("the ecdsa-with-SHA256 oid content", ["2a8648ce3d040302"]),
+        ("the prime256v1 oid content", ["2a8648ce3d030107"]),
+        ("the intel sgx extension oid content", [hx(SGX_EXT_OID)]),
+    ]
+
+    i_bodies = suite_bodies(cert_suite_path)
+    if not i_bodies:
+        require(f"(i) the M26 suite holds no check row: {cert_suite_path}",
+                False)
+    else:
+        for (i_name, i_needles) in i_pins:
+            require(f"(i) suite pin {i_name} sits in no check row",
+                    in_row(i_bodies, i_needles))
+    group("(i) M26 chain pins", before)
 
     return fail
 

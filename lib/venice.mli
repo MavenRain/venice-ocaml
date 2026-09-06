@@ -29,6 +29,7 @@ module Error : sig
     | Quote_invalid of string
     | Policy_rejected of string
     | Sig_invalid of string
+    | Cert_invalid of string
 
   val to_string : t -> string
   (* M15: Transport_unreachable prints under "unreachable: " and means
@@ -40,7 +41,8 @@ module Error : sig
      Policy_rejected prints under "policy: " and names the attestation
      policy check that refused a decoded quote. M25: Sig_invalid prints
      under "sig: " and names the signature check that refused a parsed
-     quote. *)
+     quote. M26: Cert_invalid prints under "cert: " and names the
+     certificate check that refused the PCK chain. *)
 end
 
 module Cursor : sig

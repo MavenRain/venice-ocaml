@@ -7,7 +7,7 @@
    the key, request, wire-head and transport domains, M14 the stream
    accumulator domain, M15 the never-sent transport failure and the
    client's own rejections, M23 the quote domain, M24 the policy
-   domain, M25 the signature domain. *)
+   domain, M25 the signature domain, M26 the certificate domain. *)
 
 type t =
   | Hex_invalid of string
@@ -47,6 +47,11 @@ type t =
      vocabulary of six words, so the suite and the harness can pin
      every rejection text. *)
   | Sig_invalid of string
+  (* M26 D5: the certificate unit refused the PCK chain. The reason
+     names the FIRST check that failed and comes from a CLOSED
+     vocabulary of fifteen words, so the suite and the harness can
+     pin every rejection text. *)
+  | Cert_invalid of string
 
 let to_string (e : t) : string =
   match e with
@@ -71,3 +76,4 @@ let to_string (e : t) : string =
   | Quote_invalid s -> "quote: " ^ s
   | Policy_rejected s -> "policy: " ^ s
   | Sig_invalid s -> "sig: " ^ s
+  | Cert_invalid s -> "cert: " ^ s

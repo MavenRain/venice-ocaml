@@ -180,3 +180,31 @@
  (name test_sigx)
  (modules test_sigx fixture_sig)
  (libraries venice))
+
+; M26 embeds the SAME v4 fixture a FIFTH time and the pinned Intel SGX
+; Root CA file a first time (D12).  A dune module belongs to exactly
+; ONE stanza, and fixture_v4, fixture_policy and fixture_sig are all
+; taken, so the certificate suite owns its own two generated modules
+; and embed.ml is not edited.  The stanza links sha2 beside venice,
+; because group (b) recomputes the sha256 of each DER and of each tbs
+; from the fixture bytes instead of quoting a digest the unit prints.
+(rule
+ (targets fixture_der.ml)
+ (deps ../fixtures/tdx_quote_v4.bin)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run %{exe:embed.exe} %{deps}))))
+
+(rule
+ (targets fixture_root.ml)
+ (deps ../fixtures/collateral/TrustedRootCA.der)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run %{exe:embed.exe} %{deps}))))
+
+(test
+ (name test_derx)
+ (modules test_derx fixture_der fixture_root)
+ (libraries venice sha2))
