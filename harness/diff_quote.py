@@ -68,6 +68,9 @@ suite_path = root / "test" / "test_quotex.ml"
 # The M24 suite the group (g) pins are QUOTATIONS of (D11).
 policy_suite_path = root / "test" / "test_policyx.ml"
 
+# The M25 suite the group (h) pins are QUOTATIONS of (D11).
+sig_suite_path = root / "test" / "test_sigx.ml"
+
 fail = 0
 
 
@@ -613,6 +616,126 @@ def self_check_v5(quote: bytes) -> None:
     group("v5 self-check", before)
 
 
+# ---------- the affine P-256 group (h) owns (D11) ---------------------
+#
+# Transcribed from harness/diff_p256.py lines 54 to 120 and NOT
+# imported: that file carries no if __name__ == "__main__" guard, so an
+# import of it runs its own pin sweep over test/test_p256x.ml and can
+# exit this process. The names carry a P256 prefix so nothing here
+# collides with the keccak oracle above. ec_verify there takes the
+# message digest as an INTEGER, so the wrapper below hashes the message
+# itself. lib/p256x.ml runs Jacobian coordinates; this runs affine ones
+# over python integers, so the unit and the oracle agree only when both
+# are right.
+
+P256_P = int(
+    "ffffffff00000001000000000000000000000000ffffffffffffffffffffffff", 16
+)
+P256_N = int(
+    "ffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551", 16
+)
+P256_B = int(
+    "5ac635d8aa3a93e7b3ebbd55769886bc651d06b0cc53b0f63bce3c3e27d2604b", 16
+)
+P256_G = (
+    int("6b17d1f2e12c4247f8bce6e563a440f277037d812deb33a0f4a13945d898c296", 16),
+    int("4fe342e2fe1a7f9b8ee7eb4a7c0f9e162bce33576b315ececbb6406837bf51f5", 16),
+)
+P256_SPKI_MARKER = bytes.fromhex("03420004")
+
+
+def p256_on_curve(point) -> bool:
+    """y^2 = x^3 - 3x + b over the field prime. None is not a pair."""
+    if point is None:
+        return False
+    x, y = point
+    return (y * y - (x * x * x - 3 * x + P256_B)) % P256_P == 0
+
+
+def p256_add(pa, pb):
+    """Affine addition; None is the point at infinity."""
+    if pa is None:
+        return pb
+    if pb is None:
+        return pa
+    x1, y1 = pa
+    x2, y2 = pb
+    if x1 == x2 and (y1 + y2) % P256_P == 0:
+        return None
+    if pa == pb:
+        lam = (3 * x1 * x1 - 3) * pow(2 * y1, -1, P256_P) % P256_P
+    else:
+        lam = (y2 - y1) * pow(x2 - x1, -1, P256_P) % P256_P
+    x3 = (lam * lam - x1 - x2) % P256_P
+    return (x3, (lam * (x1 - x3) - y1) % P256_P)
+
+
+def p256_mul(k: int, point):
+    """Double-and-add, LSB-first, over the affine addition above."""
+    acc = None
+    addend = point
+    while k > 0:
+        if k & 1:
+            acc = p256_add(acc, addend)
+        addend = p256_add(addend, addend)
+        k >>= 1
+    return acc
+
+
+def p256_verify(pub, r: int, s: int, e: int) -> bool:
+    """FIPS 186-4 verification, with the psychic rejects first."""
+    if not 1 <= r < P256_N or not 1 <= s < P256_N:
+        return False
+    w = pow(s, -1, P256_N)
+    shared = p256_add(
+        p256_mul(e * w % P256_N, P256_G), p256_mul(r * w % P256_N, pub)
+    )
+    if shared is None:
+        return False
+    return shared[0] % P256_N == r
+
+
+def p256_verify_message(x_hex: str, y_hex: str, r_hex: str, s_hex: str,
+                        message: bytes) -> bool:
+    """Verify a raw r || s under a raw X || Y over a whole message."""
+    if len(x_hex) != 64 or len(y_hex) != 64:
+        return False
+    pub = (int(x_hex, 16), int(y_hex, 16))
+    if not p256_on_curve(pub):
+        return False
+    e = int.from_bytes(hashlib.sha256(message).digest(), "big")
+    return p256_verify(pub, int(r_hex, 16), int(s_hex, 16), e)
+
+
+def pck_leaf_xy(pem_window: bytes):
+    """The SPKI point of the FIRST PEM block, X and Y as hex.
+
+    The block is cut by marker_blocks, its base64 body is decoded to
+    DER, and the 64 point bytes sit 4 bytes after the 03 42 00 04
+    marker, which is DER offset 330 on the fixture. Two empty strings
+    report a walk that found nothing, so the pins below turn RED
+    instead of raising.
+    """
+    blocks = marker_blocks(pem_window, PEM_MARKER)
+    if not blocks:
+        return ("", "")
+    text = blocks[0].decode("ascii", "ignore")
+    opened = text.split("-----BEGIN CERTIFICATE-----", 1)
+    if len(opened) != 2:
+        return ("", "")
+    closed = opened[1].split("-----END CERTIFICATE-----", 1)
+    if len(closed) != 2:
+        return ("", "")
+    der = base64.b64decode("".join(closed[0].split()))
+    at = der.find(P256_SPKI_MARKER)
+    if at < 0:
+        return ("", "")
+    point = der[at + 4:at + 68]
+    if len(point) != 64:
+        return ("", "")
+    return (hx(point[0:32]), hx(point[32:64]))
+
+
 # ---------- fixture mode, the default and the gate --------------------
 
 
@@ -891,6 +1014,84 @@ def fixture_mode() -> int:
             require(f"(g) suite pin {g_name} sits in no check row",
                     in_row(g_bodies, g_needles))
     group("(g) M24 suite pins", before)
+
+    # ---------- group (h), the M25 suite pins (D11) -------------------
+    #
+    # Every value below is recomputed HERE from the fixture bytes: the
+    # W1 integers through the struct-free le reader, the W2 and W4
+    # halves by absolute slices, the W3 binding digest by the same
+    # hashlib computation the qe-binding self-check runs, the W4 PCK
+    # leaf key by a base64 decode of the FIRST PEM block, and the two
+    # W5 windows out of the QE report. The oracle then VERIFIES both
+    # ECDSA legs with the affine P-256 above. Nothing here is read from
+    # lib/sigx.ml, so the unit and the oracle can only agree by
+    # agreeing on the BYTES. Each recomputed value then has to sit
+    # inside a check row of test/test_sigx.ml, whose NAME the matcher
+    # strips first.
+    before = fail
+
+    h_sdl = le(v4, 632, 4)
+    h_isv_r = hx(v4[636:668])
+    h_isv_s = hx(v4[668:700])
+    h_key_x = hx(v4[700:732])
+    h_key_y = hx(v4[732:764])
+    h_cert_key_type = le(v4, 764, 2)
+    h_cert_size = le(v4, 766, 4)
+    h_qe_report = v4[770:1154]
+    h_qe_r = hx(v4[1154:1186])
+    h_qe_s = hx(v4[1186:1218])
+    h_auth_size = le(v4, 1218, 2)
+    h_auth = v4[1220:1220 + h_auth_size]
+    h_inner_off = 1220 + h_auth_size
+    h_inner_type = le(v4, h_inner_off, 2)
+    h_inner_size = le(v4, h_inner_off + 2, 4)
+    h_pem = v4[h_inner_off + 6:h_inner_off + 6 + h_inner_size]
+    h_binding = hashlib.sha256(v4[700:764] + h_auth).hexdigest()
+    h_cpusvn = hx(h_qe_report[0:16])
+    h_mrsigner = hx(h_qe_report[128:160])
+    (h_leaf_x, h_leaf_y) = pck_leaf_xy(h_pem)
+
+    # The two ECDSA legs, VERIFIED and never quoted. They run before
+    # the suite pins, so a fixture swap reddens the arithmetic first.
+    require("(h) the QE report signature verifies under the PCK leaf key",
+            p256_verify_message(h_leaf_x, h_leaf_y, h_qe_r, h_qe_s,
+                                h_qe_report))
+    require("(h) the ISV signature verifies under the attestation key",
+            p256_verify_message(h_key_x, h_key_y, h_isv_r, h_isv_s,
+                                v4[0:632]))
+
+    h_pins = [
+        ("signature_data_len", ["signature_data_len", str(h_sdl)]),
+        ("cert_key_type", ["cert_key_type", str(h_cert_key_type)]),
+        ("cert_size", ["cert_size", str(h_cert_size)]),
+        ("qe_auth_size", ["qe_auth_size", str(h_auth_size)]),
+        ("inner_cert_type", ["inner_cert_type", str(h_inner_type)]),
+        ("inner_size", ["inner_size", str(h_inner_size)]),
+        ("the ISV r at 636", [h_isv_r]),
+        ("the ISV s at 668", [h_isv_s]),
+        ("the attestation key X at 700", [h_key_x]),
+        ("the attestation key Y at 732", [h_key_y]),
+        ("the QE r at 1154", [h_qe_r]),
+        ("the QE s at 1186", [h_qe_s]),
+        ("the auth data at 1220", [hx(h_auth)]),
+        ("the QE binding digest", [h_binding]),
+        # The two leaf halves are needled apart, so a row that spells
+        # the 128 hex characters out satisfies the pin as well as a row
+        # that concatenates the halves.
+        ("the PCK leaf key", [h_leaf_x, h_leaf_y]),
+        ("the mrsigner window at report offset 128", [h_mrsigner]),
+        ("the cpusvn window at report offset 0", [h_cpusvn]),
+    ]
+
+    h_bodies = suite_bodies(sig_suite_path)
+    if not h_bodies:
+        require(f"(h) the M25 suite holds no check row: {sig_suite_path}",
+                False)
+    else:
+        for (h_name, h_needles) in h_pins:
+            require(f"(h) suite pin {h_name} sits in no check row",
+                    in_row(h_bodies, h_needles))
+    group("(h) M25 suite pins", before)
 
     return fail
 

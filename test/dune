@@ -161,3 +161,22 @@
  (name test_policyx)
  (modules test_policyx fixture_policy)
  (libraries venice sha2))
+
+; M25 embeds the SAME v4 fixture a FOURTH time (D2).  A dune module
+; belongs to exactly ONE stanza, and fixture_v4 and fixture_policy are
+; both taken, so the signature suite owns its own generated module and
+; embed.ml is not edited.  The stanza links venice ALONE and no sha2,
+; because the suite computes no digest of its own:  every digest in a
+; row is a PINNED literal that the unit under test must reproduce.
+(rule
+ (targets fixture_sig.ml)
+ (deps ../fixtures/tdx_quote_v4.bin)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run %{exe:embed.exe} %{deps}))))
+
+(test
+ (name test_sigx)
+ (modules test_sigx fixture_sig)
+ (libraries venice))

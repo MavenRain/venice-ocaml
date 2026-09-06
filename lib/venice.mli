@@ -28,6 +28,7 @@ module Error : sig
     | Client_invalid of string
     | Quote_invalid of string
     | Policy_rejected of string
+    | Sig_invalid of string
 
   val to_string : t -> string
   (* M15: Transport_unreachable prints under "unreachable: " and means
@@ -37,7 +38,9 @@ module Error : sig
      never a server verdict. M23: Quote_invalid prints under "quote: "
      and names the TDX quote check that refused the bytes. M24:
      Policy_rejected prints under "policy: " and names the attestation
-     policy check that refused a decoded quote. *)
+     policy check that refused a decoded quote. M25: Sig_invalid prints
+     under "sig: " and names the signature check that refused a parsed
+     quote. *)
 end
 
 module Cursor : sig

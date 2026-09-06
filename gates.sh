@@ -10,7 +10,7 @@ cd "$here"
 dunecho build
 
 # Test suites; grows one entry per milestone that lands a suite.
-suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx test_hmacx test_keccakx test_p256x test_secpx test_aesx test_gcmx test_quotex test_policyx"
+suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx test_hmacx test_keccakx test_p256x test_secpx test_aesx test_gcmx test_quotex test_policyx test_sigx"
 # The capture sits in an if-condition so a failing suite cannot abort
 # the script (set -e) before its output and name reach the log; the
 # FAIL-text case still guards a suite that prints FAIL yet exits 0.
@@ -92,7 +92,8 @@ fi
 # self-check lines). Its pin groups are (a) the fixture digests and
 # byte counts, (b) the v4 header and body fields, (c) the length rule
 # and the trailing padding, (d) the certification chain and (e) the qe
-# binding value, (f) the M23 suite pins and (g) the M24 suite pins. A
+# binding value, (f) the M23 suite pins, (g) the M24 suite pins
+# and (h) the M25 suite pins. A
 # failed pin COUNTS and the run continues, so one red gate reports every
 # disagreement.
 "$py" "$here/harness/diff_quote.py"
@@ -202,7 +203,24 @@ fi
 # functor and holds no Map, so it is the SECOND module the omlz note at
 # lines 105 to 108 above names as a bpf artifact, eligible for the M38
 # gate that the ladder does not run today.
-core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml hmacx.ml keccakx.ml p256x.ml secpx.ml aesx.ml gcmx.ml quotex.ml policyx.ml"
+# sigx.ml is the THIRD attestation-tower module (M25): quotex DECODES
+# the bytes, policyx DECIDES on the body and this unit PROVES the
+# signature section, pure and sans-io in the same shape, no Bytes, no
+# Buffer, no Array, no reference cell, no division line and no
+# remainder, and no loop keyword. It reads quotex, p256x, bytesx and
+# errx and calls Sha2.Sha256.digest, and trap 2 fires CROSS-MODULE, so
+# this file is linted beside all four and never alone. ONE rules record
+# built by rules () carries the QE binding offset and the binding
+# length, and it is passed FIRST to every helper, so no helper reads a
+# top-level constant under trap 2 and no numeric literal sits outside
+# that record. It calls P256x.verify_message TWICE, once for the QE
+# report signature under the PCK leaf key and once for the ISV
+# signature under the attestation key, and Sha2.Sha256.digest ONCE,
+# inside binding_digest, because the p256x message verify hashes the
+# message itself. The unit applies no functor and holds no Map. The
+# omlz note at lines 105 to 108 above names quotex plus policy only, so
+# this ladder runs no omlz command for it.
+core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml hmacx.ml keccakx.ml p256x.ml secpx.ml aesx.ml gcmx.ml quotex.ml policyx.ml sigx.ml"
 if [ -n "$core" ]; then
   # The list is echoed so the gate LOG proves which modules zxlint
   # covered; zxlint itself prints only a verdict.

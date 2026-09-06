@@ -7,7 +7,7 @@
    the key, request, wire-head and transport domains, M14 the stream
    accumulator domain, M15 the never-sent transport failure and the
    client's own rejections, M23 the quote domain, M24 the policy
-   domain. *)
+   domain, M25 the signature domain. *)
 
 type t =
   | Hex_invalid of string
@@ -42,6 +42,11 @@ type t =
      ten words, so the suite and the harness can pin every rejection
      text. *)
   | Policy_rejected of string
+  (* M25 D5: the attestation signature unit refused the quote. The
+     reason names the FIRST check that failed and comes from a CLOSED
+     vocabulary of six words, so the suite and the harness can pin
+     every rejection text. *)
+  | Sig_invalid of string
 
 let to_string (e : t) : string =
   match e with
@@ -65,3 +70,4 @@ let to_string (e : t) : string =
   | Client_invalid s -> "client: " ^ s
   | Quote_invalid s -> "quote: " ^ s
   | Policy_rejected s -> "policy: " ^ s
+  | Sig_invalid s -> "sig: " ^ s

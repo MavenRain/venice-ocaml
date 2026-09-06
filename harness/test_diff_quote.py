@@ -2,6 +2,7 @@
 """Exercise the quote probe without any third-party Python packages."""
 
 import base64
+import hashlib
 import json
 import pathlib
 import struct
@@ -294,6 +295,145 @@ class PolicySuitePinTests(unittest.TestCase):
         other[0] ^= 1
         self.assertFalse(self.probe.in_row(
             self.bodies, [probe.hx(probe.eth_address(bytes(other)))]))
+
+
+class SignatureSuitePinTests(unittest.TestCase):
+    """One case per require of the M25 group (h), each with a control.
+
+    Every case asserts the TRUE leg on the real fixture and the FALSE
+    leg on a mutated copy, so a require that always passes fails here.
+    The first case runs the harness and asserts its group (h) line.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.probe = load_probe()
+        cls.v4 = (ROOT / "fixtures/tdx_quote_v4.bin").read_bytes()
+        cls.bodies = cls.probe.suite_bodies(cls.probe.sig_suite_path)
+
+    def flip(self, off, mask=1):
+        """The fixture with one bit of one byte inverted."""
+        broken = bytearray(self.v4)
+        broken[off] ^= mask
+        return bytes(broken)
+
+    def integer(self, name, value):
+        """One W1 integer sits beside its accessor name in one row."""
+        self.assertTrue(self.probe.in_row(self.bodies, [name, str(value)]))
+        self.assertFalse(
+            self.probe.in_row(self.bodies, [name, str(value + 1)]))
+
+    def window(self, off, size):
+        """One absolute window pins its own bytes and no other.
+
+        The control moves the TOP bit of the LAST byte of the window,
+        which no row of the suite spells out.
+        """
+        hx = self.probe.hx
+        self.assertTrue(
+            self.probe.in_row(self.bodies, [hx(self.v4[off:off + size])]))
+        moved = self.flip(off + size - 1, 0x80)
+        self.assertFalse(
+            self.probe.in_row(self.bodies, [hx(moved[off:off + size])]))
+
+    def pem_window(self):
+        """The PEM window the first certificate block sits in."""
+        le = self.probe.le
+        auth_size = le(self.v4, 1218, 2)
+        inner_off = 1220 + auth_size
+        inner_size = le(self.v4, inner_off + 2, 4)
+        return self.v4[inner_off + 6:inner_off + 6 + inner_size]
+
+    def test_group_h_runs_and_reports_ok(self):
+        result = subprocess.run(
+            [sys.executable, "-S", str(PROBE)],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("(h) M25 suite pins ok", result.stdout)
+
+    def test_qe_leg_verifies_under_the_pck_leaf_key(self):
+        probe = self.probe
+        (x, y) = probe.pck_leaf_xy(self.pem_window())
+        r = probe.hx(self.v4[1154:1186])
+        s = probe.hx(self.v4[1186:1218])
+        self.assertTrue(
+            probe.p256_verify_message(x, y, r, s, self.v4[770:1154]))
+        moved = self.flip(770)
+        self.assertFalse(
+            probe.p256_verify_message(x, y, r, s, moved[770:1154]))
+
+    def test_isv_leg_verifies_under_the_attestation_key(self):
+        probe = self.probe
+        x = probe.hx(self.v4[700:732])
+        y = probe.hx(self.v4[732:764])
+        r = probe.hx(self.v4[636:668])
+        s = probe.hx(self.v4[668:700])
+        self.assertTrue(probe.p256_verify_message(x, y, r, s, self.v4[0:632]))
+        moved = self.flip(30)
+        self.assertFalse(probe.p256_verify_message(x, y, r, s, moved[0:632]))
+
+    def test_signature_data_len_pin_sits_in_a_check_row(self):
+        self.integer("signature_data_len", self.probe.le(self.v4, 632, 4))
+
+    def test_cert_key_type_pin_sits_in_a_check_row(self):
+        self.integer("cert_key_type", self.probe.le(self.v4, 764, 2))
+
+    def test_cert_size_pin_sits_in_a_check_row(self):
+        self.integer("cert_size", self.probe.le(self.v4, 766, 4))
+
+    def test_qe_auth_size_pin_sits_in_a_check_row(self):
+        self.integer("qe_auth_size", self.probe.le(self.v4, 1218, 2))
+
+    def test_inner_cert_type_pin_sits_in_a_check_row(self):
+        le = self.probe.le
+        inner_off = 1220 + le(self.v4, 1218, 2)
+        self.integer("inner_cert_type", le(self.v4, inner_off, 2))
+
+    def test_inner_size_pin_sits_in_a_check_row(self):
+        le = self.probe.le
+        inner_off = 1220 + le(self.v4, 1218, 2)
+        self.integer("inner_size", le(self.v4, inner_off + 2, 4))
+
+    def test_isv_r_pin_sits_in_a_check_row(self):
+        self.window(636, 32)
+
+    def test_isv_s_pin_sits_in_a_check_row(self):
+        self.window(668, 32)
+
+    def test_attestation_key_x_pin_sits_in_a_check_row(self):
+        self.window(700, 32)
+
+    def test_attestation_key_y_pin_sits_in_a_check_row(self):
+        self.window(732, 32)
+
+    def test_qe_r_pin_sits_in_a_check_row(self):
+        self.window(1154, 32)
+
+    def test_qe_s_pin_sits_in_a_check_row(self):
+        self.window(1186, 32)
+
+    def test_auth_data_pin_sits_in_a_check_row(self):
+        self.window(1220, self.probe.le(self.v4, 1218, 2))
+
+    def test_qe_binding_digest_pin_sits_in_a_check_row(self):
+        auth_size = self.probe.le(self.v4, 1218, 2)
+        auth = self.v4[1220:1220 + auth_size]
+        good = hashlib.sha256(self.v4[700:764] + auth).hexdigest()
+        self.assertTrue(self.probe.in_row(self.bodies, [good]))
+        alone = hashlib.sha256(self.v4[700:764]).hexdigest()
+        self.assertFalse(self.probe.in_row(self.bodies, [alone]))
+
+    def test_pck_leaf_key_pin_sits_in_one_check_row(self):
+        (x, y) = self.probe.pck_leaf_xy(self.pem_window())
+        self.assertTrue(self.probe.in_row(self.bodies, [x, y]))
+        self.assertFalse(self.probe.in_row(self.bodies, [y + x, x]))
+
+    def test_mrsigner_window_pin_sits_in_a_check_row(self):
+        self.window(770 + 128, 32)
+
+    def test_cpusvn_window_pin_sits_in_a_check_row(self):
+        self.window(770, 16)
 
 
 if __name__ == "__main__":
