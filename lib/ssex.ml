@@ -299,7 +299,8 @@ let with_last (last : string option) (e : Errx.t) : Errx.t =
   | Errx.Chunk_invalid _ | Errx.Key_invalid _ | Errx.Req_invalid _
   | Errx.Wire_invalid _ | Errx.Transport_failed _
   | Errx.Stream_invalid _ | Errx.Transport_unreachable _
-  | Errx.Client_invalid _ | Errx.Quote_invalid _ ->
+  | Errx.Client_invalid _ | Errx.Quote_invalid _
+  | Errx.Policy_rejected _ ->
     e
 
 (* Close policy (A4): Require_done (default) rejects a close before

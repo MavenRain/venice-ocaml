@@ -129,6 +129,7 @@ let obstacle_of_error (e : Errx.t) : Retryx.Obstacle.t option =
   | Errx.Stream_invalid (_ : string) -> None
   | Errx.Client_invalid (_ : string) -> None
   | Errx.Quote_invalid (_ : string) -> None
+  | Errx.Policy_rejected (_ : string) -> None
 
 type stopper =
   | Http_stop of Headx.failure

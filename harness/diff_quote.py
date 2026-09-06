@@ -65,6 +65,9 @@ root_ca_path = fixtures / "collateral" / "TrustedRootCA.der"
 # The M23 suite the group (f) pins are QUOTATIONS of (D11).
 suite_path = root / "test" / "test_quotex.ml"
 
+# The M24 suite the group (g) pins are QUOTATIONS of (D11).
+policy_suite_path = root / "test" / "test_policyx.ml"
+
 fail = 0
 
 
@@ -189,15 +192,18 @@ def check_rows(text: str) -> list:
 LABEL = re.compile(r'^\s*(?:\[\s*)?\(\s*"(?:[^"\\]|\\.)*"')
 
 
-def suite_bodies() -> list:
-    """Every check row of test/test_quotex.ml, with its NAME removed.
+def suite_bodies(path=None) -> list:
+    """Every check row of one suite file, with its NAME removed.
 
     The name is dropped so a value that only appears in a row TITLE
-    never satisfies a pin.
+    never satisfies a pin. The default is the module-level suite_path,
+    read at CALL time, so the group (f) call keeps the behavior it had
+    before M24 added group (g).
     """
-    if not suite_path.is_file():
+    chosen = suite_path if path is None else path
+    if not chosen.is_file():
         return []
-    stripped = strip_ocaml_comments(suite_path.read_text())
+    stripped = strip_ocaml_comments(chosen.read_text())
     return [LABEL.sub("", row, count=1) for row in check_rows(stripped)]
 
 
@@ -478,6 +484,19 @@ SYNTHETIC_ZERO_WINDOW = "000000000000000000000000"
 # The ED25519 control: the raw key bytes 0x40..0x5f fill the window the
 # ECDSA path requires to be zero, so the zero test MUST reject it.
 ED25519_CONTROL_WINDOW = "5455565758595a5b5c5d5e5f"
+
+# ---------- the W5 real-key vector the M24 suite binds against --------
+#
+# The suite mints the secp256k1 generator as Secpx.Pubkey.of_scalar of
+# the scalar 1. The oracle keeps the two COORDINATES only and re-derives
+# the address and the report_data from its own keccak, so a constant
+# copied out of lib/policyx.ml or out of the suite cannot satisfy the
+# pins below.
+
+G_X = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
+G_Y = "483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8"
+# The M24 suite paints the SAME nonce the synthetic pair carries (W5).
+G_NONCE = SYNTHETIC_NONCE
 
 
 # ---------- self-check (i): the QE binding, recomputed every run ------
@@ -830,6 +849,48 @@ def fixture_mode() -> int:
             require(f"(f) suite pin {f_name} sits in no check row",
                     in_row(f_bodies, f_needles))
     group("(f) M23 suite pins", before)
+
+    # ---------- group (g), the M24 suite pins (D11) -------------------
+    #
+    # The five measurement hex strings and byte 168 come straight out of
+    # the fixture bytes through the struct-free le reader, and the G
+    # address, the G report_data and the synthetic address come out of
+    # the keccak of this file. Nothing here is read from lib/policyx.ml,
+    # so the unit and the oracle can only agree by agreeing on the
+    # BYTES. Each value then has to sit inside a check row of
+    # test/test_policyx.ml, whose NAME the matcher strips first.
+    before = fail
+
+    g_address = hx(eth_address(uh(G_X) + uh(G_Y)))
+    g_report_data = hx(report_data_ecdsa(uh(g_address), uh(G_NONCE)))
+    g_synthetic_address = hx(eth_address(SYNTHETIC_XY))
+
+    g_pins = [
+        ("mr_td", ["mr_td", hx(v4[184:232])]),
+        ("rt_mr0", ["rt_mr0", hx(v4[376:424])]),
+        ("rt_mr1", ["rt_mr1", hx(v4[424:472])]),
+        ("rt_mr2", ["rt_mr2", hx(v4[472:520])]),
+        ("rt_mr3", ["rt_mr3", hx(v4[520:568])]),
+        ("td_attributes", ["td_attributes", f"{le(v4, 168, 8)}L"]),
+        ("the G address", [g_address]),
+        # The three windows of W1, so a row that CONCATENATES the
+        # address, the zero pad and the nonce satisfies the pin as well
+        # as a row that spells the 64 bytes out.
+        ("the G report_data", [g_report_data[0:40],
+                               g_report_data[40:64],
+                               g_report_data[64:128]]),
+        ("the synthetic address", [g_synthetic_address]),
+    ]
+
+    g_bodies = suite_bodies(policy_suite_path)
+    if not g_bodies:
+        require(f"(g) the M24 suite holds no check row: {policy_suite_path}",
+                False)
+    else:
+        for (g_name, g_needles) in g_pins:
+            require(f"(g) suite pin {g_name} sits in no check row",
+                    in_row(g_bodies, g_needles))
+    group("(g) M24 suite pins", before)
 
     return fail
 

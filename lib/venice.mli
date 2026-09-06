@@ -27,6 +27,7 @@ module Error : sig
     | Transport_unreachable of string
     | Client_invalid of string
     | Quote_invalid of string
+    | Policy_rejected of string
 
   val to_string : t -> string
   (* M15: Transport_unreachable prints under "unreachable: " and means
@@ -34,7 +35,9 @@ module Error : sig
      retry of the same request cannot double-bill. Client_invalid
      prints under "client: " and is always the SDK's own rejection,
      never a server verdict. M23: Quote_invalid prints under "quote: "
-     and names the TDX quote check that refused the bytes. *)
+     and names the TDX quote check that refused the bytes. M24:
+     Policy_rejected prints under "policy: " and names the attestation
+     policy check that refused a decoded quote. *)
 end
 
 module Cursor : sig

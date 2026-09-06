@@ -198,5 +198,103 @@ class SuitePinTests(unittest.TestCase):
         self.assertFalse(self.probe.in_row(hidden, ["cert_size", "4166"]))
 
 
+class PolicySuitePinTests(unittest.TestCase):
+    """One case per require of the M24 group (g), each with a control.
+
+    Every case asserts the TRUE leg on the real fixture and the FALSE
+    leg on a mutated copy, so a require that always passes fails here.
+    The tenth case runs the harness and asserts its group (g) line.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.probe = load_probe()
+        cls.v4 = (ROOT / "fixtures/tdx_quote_v4.bin").read_bytes()
+        cls.bodies = cls.probe.suite_bodies(cls.probe.policy_suite_path)
+
+    def flip(self, off, mask=1):
+        """The fixture with one bit of one byte inverted."""
+        broken = bytearray(self.v4)
+        broken[off] ^= mask
+        return bytes(broken)
+
+    def measurement(self, name, off):
+        """One measurement window pins its own bytes and no other.
+
+        The control moves the TOP bit of the LAST byte of the window,
+        because the suite pins the observed value of a low-bit mutant of
+        the FIRST byte and that value is a real row of group (h).
+        """
+        hx = self.probe.hx
+        self.assertTrue(
+            self.probe.in_row(self.bodies, [name, hx(self.v4[off:off + 48])]))
+        moved = self.flip(off + 47, 0x80)
+        self.assertFalse(
+            self.probe.in_row(self.bodies, [name, hx(moved[off:off + 48])]))
+
+    def test_group_g_runs_and_reports_ok(self):
+        result = subprocess.run(
+            [sys.executable, "-S", str(PROBE)],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("(g) M24 suite pins ok", result.stdout)
+
+    def test_mr_td_pin_sits_in_a_check_row(self):
+        self.measurement("mr_td", 184)
+
+    def test_rt_mr0_pin_sits_in_a_check_row(self):
+        self.measurement("rt_mr0", 376)
+
+    def test_rt_mr1_pin_sits_in_a_check_row(self):
+        self.measurement("rt_mr1", 424)
+
+    def test_rt_mr2_pin_sits_in_a_check_row(self):
+        self.measurement("rt_mr2", 472)
+
+    def test_rt_mr3_pin_sits_in_a_check_row(self):
+        self.measurement("rt_mr3", 520)
+
+    def test_td_attributes_pin_sits_in_a_check_row(self):
+        le = self.probe.le
+        self.assertTrue(self.probe.in_row(
+            self.bodies, ["td_attributes", f"{le(self.v4, 168, 8)}L"]))
+        moved = self.flip(168)
+        self.assertFalse(self.probe.in_row(
+            self.bodies, ["td_attributes", f"{le(moved, 168, 8)}L"]))
+
+    def test_g_address_pin_sits_in_a_check_row(self):
+        probe = self.probe
+        xy = probe.uh(probe.G_X) + probe.uh(probe.G_Y)
+        self.assertTrue(
+            self.probe.in_row(self.bodies, [probe.hx(probe.eth_address(xy))]))
+        other = bytearray(xy)
+        other[0] ^= 1
+        self.assertFalse(self.probe.in_row(
+            self.bodies, [probe.hx(probe.eth_address(bytes(other)))]))
+
+    def test_g_report_data_pin_sits_in_one_check_row(self):
+        probe = self.probe
+        xy = probe.uh(probe.G_X) + probe.uh(probe.G_Y)
+        address = probe.eth_address(xy)
+        good = probe.hx(probe.report_data_ecdsa(address, probe.uh(probe.G_NONCE)))
+        self.assertTrue(self.probe.in_row(
+            self.bodies, [good[0:40], good[40:64], good[64:128]]))
+        other = bytearray(probe.uh(probe.G_NONCE))
+        other[31] ^= 1
+        bad = probe.hx(probe.report_data_ecdsa(address, bytes(other)))
+        self.assertFalse(self.probe.in_row(
+            self.bodies, [bad[0:40], bad[40:64], bad[64:128]]))
+
+    def test_synthetic_address_pin_sits_in_a_check_row(self):
+        probe = self.probe
+        self.assertTrue(self.probe.in_row(
+            self.bodies, [probe.hx(probe.eth_address(probe.SYNTHETIC_XY))]))
+        other = bytearray(probe.SYNTHETIC_XY)
+        other[0] ^= 1
+        self.assertFalse(self.probe.in_row(
+            self.bodies, [probe.hx(probe.eth_address(bytes(other)))]))
+
+
 if __name__ == "__main__":
     unittest.main()

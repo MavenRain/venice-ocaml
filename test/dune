@@ -144,3 +144,20 @@
  (name test_quotex)
  (modules test_quotex fixture_v4 fixture_v5)
  (libraries venice sha2))
+
+; M24 embeds the SAME v4 fixture a third time (D2).  A dune module
+; belongs to exactly ONE stanza, and fixture_v4 already belongs to the
+; test_quotex stanza above, so the policy suite owns its own generated
+; module and embed.ml is not edited.
+(rule
+ (targets fixture_policy.ml)
+ (deps ../fixtures/tdx_quote_v4.bin)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run %{exe:embed.exe} %{deps}))))
+
+(test
+ (name test_policyx)
+ (modules test_policyx fixture_policy)
+ (libraries venice sha2))
