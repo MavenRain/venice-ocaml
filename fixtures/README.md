@@ -239,3 +239,14 @@ carries 70 zero bytes of trailing padding after its structure ends.
 Rule 7 is the reason `tdx_quote_v5.bin` sits here at all: a decoder
 that never sees a version it must refuse has no evidence that it
 refuses one.
+
+## M28 synthetic envelope
+
+`attestation_synthetic_v4.json` is SYNTHETIC, not a Venice capture.  It
+wraps the unchanged v4 quote in standard base64 and copies its nonce
+window at byte 600.  The secp256k1 generator supplies the signing key
+and address.  GPU evidence is synthetic and receives no NRAS check.
+The signed quote uses Phala's binding, so the envelope must fail at the
+policy address check.  Painting that binding instead fails the ISV
+signature check.  A real M31 capture is still required to demonstrate a
+successful Venice pipeline;  live wire claims remain unconfirmed.

@@ -181,7 +181,7 @@ module Choice = struct
     | Errx.Transport_failed _ | Errx.Stream_invalid _
     | Errx.Transport_unreachable _ | Errx.Client_invalid _
     | Errx.Quote_invalid _ | Errx.Policy_rejected _
-    | Errx.Sig_invalid _ | Errx.Cert_invalid _ ->
+    | Errx.Sig_invalid _ | Errx.Cert_invalid _ | Errx.Tcb_invalid _ | Errx.Attest_invalid _ ->
       Errx.to_string e
 
   let tool_calls (c : t) : (Msgx.Tool_call.t list, Errx.t) result =

@@ -74,6 +74,13 @@ sig_suite_path = root / "test" / "test_sigx.ml"
 # The M26 suite the group (i) pins are QUOTATIONS of (D11).
 cert_suite_path = root / "test" / "test_derx.ml"
 
+# The M27 suite the group (j) pins are QUOTATIONS of (D11).
+tcb_suite_path = root / "test" / "test_tcbx.ml"
+
+# The M28 synthetic envelope and the suite that consumes it.
+attest_suite_path = root / "test" / "test_attestx.ml"
+envelope_path = fixtures / "attestation_synthetic_v4.json"
+
 fail = 0
 
 
@@ -924,6 +931,52 @@ def digest_of(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def attest_checks(v4: bytes, raw: bytes, bodies: list) -> dict:
+    """Independent M28 content checks plus literals in executable rows.
+
+    These pin a synthetic parser fixture, never a live Venice response.
+    The key address uses the oracle's own Keccak implementation.
+    """
+    body = json.loads(raw)
+    inner = json.loads(body["nvidia_payload"])
+    key = bytes.fromhex(body["signing_key"].removeprefix("0x"))
+    address = keccak256(key[1:])[-20:].hex()
+    echo = v4[600:632].hex()
+    checks = {
+        "quote member": body["intel_quote"] == base64.b64encode(v4).decode(),
+        "nonce window": body["nonce"] == echo,
+        "key SEC1": len(key) == 65 and key[0] == 4,
+        "key address": body["signing_address"].removeprefix("0x") == address,
+        "payload nonce": inner["nonce"].lower() == echo,
+        "payload evidence": isinstance(inner["evidence_list"], list)
+                            and len(inner["evidence_list"]) > 0,
+        "payload arch": inner["arch"] == "HOPPER",
+        "suite nonempty": bool(bodies),
+    }
+    pins = {
+        "quote digest": hashlib.sha256(v4).hexdigest(),
+        "quote bytes": str(len(v4)),
+        "envelope digest": hashlib.sha256(raw).hexdigest(),
+        "envelope bytes": str(len(raw)),
+        "member digest": hashlib.sha256(body["intel_quote"].encode()).hexdigest(),
+        "member bytes": str(len(body["intel_quote"])),
+        "echo": echo,
+        "key": body["signing_key"],
+        "address": body["signing_address"],
+        "arch": inner["arch"],
+    }
+    words = ["envelope", "intel quote member", "intel quote encoding",
+             "signing key member", "signing key", "signing address member",
+             "signing address", "nonce member", "nonce echo", "nvidia payload",
+             "nvidia payload json", "nvidia payload members",
+             "nvidia payload nonce", "nvidia evidence list"]
+    for name, value in pins.items():
+        checks["suite " + name] = in_row(bodies, [value])
+    for word in words:
+        checks["word " + word] = in_row(bodies, ['"' + word + '"'])
+    return checks
+
+
 def fixture_mode() -> int:
     """Run the self-checks, then every pin group, then report."""
     v4 = read_fixture(v4_path)
@@ -1606,6 +1659,358 @@ def fixture_mode() -> int:
             require(f"(i) suite pin {i_name} sits in no check row",
                     in_row(i_bodies, i_needles))
     group("(i) M26 chain pins", before)
+
+    # ---------- group (j), the M27 tcb pins (D12 as amended by A12) ----
+    #
+    # Every value below is recomputed HERE from the collateral bytes of
+    # fixtures/collateral/tdx_quote_collateral.json, from the pinned root
+    # on disk and from the quote, and nothing is read from lib/tcbx.ml:
+    # the nine envelope members and the two document digests through
+    # hashlib, BOTH detached signatures through the affine P-256 verify
+    # of group (h) under the signing key this file's own DER walk pulls
+    # out of block 1 of each issuer chain, the root pin against
+    # fixtures/collateral/TrustedRootCA.der, the QE report fields cut at
+    # the D7 offsets, and the platform level, the TDX module identity and
+    # the QE level through loops written here. One CONTROL lowers cpusvn
+    # byte 7 and shows the platform grade move. Each recomputed value
+    # then has to sit inside a check row of test/test_tcbx.ml, whose NAME
+    # the matcher strips first.
+    before = fail
+
+    j_col = json.loads(collateral_json_path.read_text())
+    pin("(j) the collateral member count", str(len(j_col)), "9")
+    require("(j) the envelope carries the six members M27 reads",
+            all(k in j_col for k in ("tcb_info", "tcb_info_signature",
+                                     "tcb_info_issuer_chain", "qe_identity",
+                                     "qe_identity_signature",
+                                     "qe_identity_issuer_chain")))
+    require("(j) the envelope carries the three CRL members M27 ignores",
+            all(k in j_col for k in ("pck_crl", "pck_crl_issuer_chain",
+                                     "root_ca_crl")))
+
+    j_info = j_col["tcb_info"]
+    j_qe_doc = j_col["qe_identity"]
+    j_info_sha = hashlib.sha256(j_info.encode()).hexdigest()
+    j_qe_sha = hashlib.sha256(j_qe_doc.encode()).hexdigest()
+    pin("(j) the tcb info document length", str(len(j_info)), "2934")
+    pin("(j) the tcb info document digest", j_info_sha,
+        "369f99a122169e850d32bacb7970da74356f9746526256818124d9f646dd6ace")
+    pin("(j) the qe identity document length", str(len(j_qe_doc)), "461")
+    pin("(j) the qe identity document digest", j_qe_sha,
+        "261a8b43ded29851e71f61b094e0aea2f12a6e6b75e38da2a49447e97ae15e96")
+    pin("(j) the tcb info signature length",
+        str(len(j_col["tcb_info_signature"])), "128")
+    pin("(j) the qe identity signature length",
+        str(len(j_col["qe_identity_signature"])), "128")
+    require("(j) the two issuer chains are the same bytes",
+            j_col["tcb_info_issuer_chain"]
+            == j_col["qe_identity_issuer_chain"])
+
+    j_root = read_fixture(root_ca_path)
+    j_root_fields = cert_fields(j_root)
+    j_root_point = spki_point(j_root, j_root_fields["spki"])["point"]
+    pin("(j) the pinned root digest", hashlib.sha256(j_root).hexdigest(),
+        "44a0196b2b99f889b8e149e95b807a350e7424964399e885a7cbb8ccfab674d3")
+
+    j_keys = {}
+    for (j_name, j_chain_key) in (("tcb info", "tcb_info_issuer_chain"),
+                                  ("qe identity",
+                                   "qe_identity_issuer_chain")):
+        j_ders = chain_ders(j_col[j_chain_key].encode())
+        pin(f"(j) the {j_name} chain block count", str(len(j_ders)), "2")
+        j_fields = cert_fields(j_ders[0])
+        j_point = spki_point(j_ders[0], j_fields["spki"])["point"]
+        j_keys[j_name] = (hx(j_point[1:33]), hx(j_point[33:65]))
+        require(f"(j) the {j_name} block 1 issuer is the pinned root "
+                "subject",
+                j_fields["issuer"] == j_root_fields["subject"])
+        require(f"(j) the {j_name} block 2 is the pinned root bytes",
+                j_ders[1] == j_root)
+        j_window = [der_body(j_ders[0], k).decode("ascii", "ignore")
+                    for k in der_kids(j_ders[0], j_fields["validity"])]
+        pin(f"(j) the {j_name} signing certificate validity window",
+            " ".join(j_window), "250506092500Z 320506092500Z")
+        j_halves = sig_halves(j_ders[0], j_fields["sig_bits"])
+        require(f"(j) the pinned root key verifies the {j_name} signing "
+                "certificate",
+                p256_verify_message(hx(j_root_point[1:33]),
+                                    hx(j_root_point[33:65]),
+                                    hx(j_halves["r"]), hx(j_halves["s"]),
+                                    j_fields["tbs_window"]))
+
+    j_key_x = j_keys["tcb info"][0]
+    j_key_y = j_keys["tcb info"][1]
+    pin("(j) the signing certificate key x half", j_key_x,
+        "43451bcc73c9d5917caf766e61af3fe98087dd4f13257b261e851897799dd13d")
+    pin("(j) the signing certificate key y half", j_key_y,
+        "6811fb47713803bb9bae587fccddc2e31be9a28b86962acc6daf96da58eeca96")
+    require("(j) both issuer chains carry the same signing key",
+            j_keys["tcb info"] == j_keys["qe identity"])
+    require("(j) the signing key verifies the tcb info signature",
+            p256_verify_message(j_key_x, j_key_y,
+                                j_col["tcb_info_signature"][:64],
+                                j_col["tcb_info_signature"][64:],
+                                j_info.encode()))
+    require("(j) the signing key verifies the qe identity signature",
+            p256_verify_message(j_key_x, j_key_y,
+                                j_col["qe_identity_signature"][:64],
+                                j_col["qe_identity_signature"][64:],
+                                j_qe_doc.encode()))
+    require("(j) one added byte breaks the tcb info signature",
+            not p256_verify_message(j_key_x, j_key_y,
+                                    j_col["tcb_info_signature"][:64],
+                                    j_col["tcb_info_signature"][64:],
+                                    (j_info + " ").encode()))
+    require("(j) the qe identity signature does not sign the tcb info",
+            not p256_verify_message(j_key_x, j_key_y,
+                                    j_col["qe_identity_signature"][:64],
+                                    j_col["qe_identity_signature"][64:],
+                                    j_info.encode()))
+
+    j_ti = json.loads(j_info)
+    pin("(j) the tcb info id", j_ti["id"], "TDX")
+    pin("(j) the tcb info version", str(j_ti["version"]), "3")
+    pin("(j) the tcb info tcb type", str(j_ti["tcbType"]), "0")
+    pin("(j) the tcb info fmspc against the PCK fmspc",
+        j_ti["fmspc"].lower(), i_fmspc)
+    pin("(j) the tcb info pce id against the PCK pce id",
+        j_ti["pceId"].lower(), i_pce_id)
+    pin("(j) the tcb info evaluation data number",
+        str(j_ti["tcbEvaluationDataNumber"]), "17")
+    pin("(j) the tcb info validity window",
+        f"{j_ti['issueDate']} {j_ti['nextUpdate']}",
+        "2025-06-19T10:16:03Z 2025-07-19T10:16:03Z")
+    pin("(j) the tcb info level count", str(len(j_ti["tcbLevels"])), "2")
+    pin("(j) the tdx module mrsigner",
+        j_ti["tdxModule"]["mrsigner"].lower(), "00" * 48)
+    pin("(j) the tdx module attributes",
+        j_ti["tdxModule"]["attributes"].lower(), "0000000000000000")
+    pin("(j) the tdx module attributes mask",
+        j_ti["tdxModule"]["attributesMask"].lower(), "ffffffffffffffff")
+    pin("(j) the tdx module identity ids",
+        ",".join(x["id"] for x in j_ti["tdxModuleIdentities"]),
+        "TDX_03,TDX_01")
+    require("(j) every tcb level carries sixteen components of each kind",
+            all(len(x["tcb"]["sgxtcbcomponents"]) == 16
+                and len(x["tcb"]["tdxtcbcomponents"]) == 16
+                for x in j_ti["tcbLevels"]))
+
+    j_tee = v4[48:64]
+    j_seam_mrsigner = hx(v4[112:160])
+    j_seam_attributes = le(v4, 160, 8)
+    pin("(j) the seam mrsigner of the quote", j_seam_mrsigner, "00" * 48)
+    pin("(j) the seam attributes of the quote", str(j_seam_attributes), "0")
+    pin("(j) the tee tcb svn of the quote", hx(j_tee),
+        "06010300000000000000000000000000")
+    require("(j) the tdx module mrsigner is the seam mrsigner",
+            j_ti["tdxModule"]["mrsigner"].lower() == j_seam_mrsigner)
+    require("(j) the masked seam attributes are the tdx module attributes",
+            j_seam_attributes
+            & int.from_bytes(uh(j_ti["tdxModule"]["attributesMask"].lower()),
+                             "little")
+            == int.from_bytes(uh(j_ti["tdxModule"]["attributes"].lower()),
+                              "little"))
+
+    j_major = j_tee[1]
+    pin("(j) the seam major version", str(j_major), "1")
+    j_id_name = f"TDX_{j_major:02d}"
+    pin("(j) the tdx module identity name", j_id_name, "TDX_01")
+    j_identity = [x for x in j_ti["tdxModuleIdentities"]
+                  if x["id"] == j_id_name]
+    require("(j) the tdx module identity sits in the document",
+            len(j_identity) == 1)
+    j_module_levels = ([(x["tcb"]["isvsvn"], x["tcbStatus"])
+                        for x in j_identity[0]["tcbLevels"]]
+                       if j_identity else [])
+    pin("(j) the tdx module identity levels", str(j_module_levels),
+        "[(4, 'UpToDate'), (2, 'OutOfDate')]")
+    j_module_match = [x for x in j_module_levels if x[0] <= j_tee[0]]
+    pin("(j) the tdx module identity grade",
+        j_module_match[0][1] if j_module_match else "reject", "UpToDate")
+    require("(j) a module isvsvn below every level rejects",
+            not [x for x in j_module_levels if x[0] <= 0])
+
+    def j_grade(cpu: bytes, pcesvn: int, tee: bytes):
+        """The FIRST tcbLevel at or below every platform value.
+
+        Intel's isTdxTcbHigherOrEqual starts the tdxtcbcomponents walk
+        at index 2 when tee[1], the TDX module major version, is not 0,
+        because components 0 and 1 are graded by the module identity.
+        """
+        j_skip = 2 if tee[1] > 0 else 0
+        for (j_n, j_level) in enumerate(j_ti["tcbLevels"]):
+            j_t = j_level["tcb"]
+            if (all(c["svn"] <= cpu[k]
+                    for (k, c) in enumerate(j_t["sgxtcbcomponents"]))
+                    and j_t["pcesvn"] <= pcesvn
+                    and all(c["svn"] <= tee[k]
+                            for (k, c) in enumerate(j_t["tdxtcbcomponents"])
+                            if k >= j_skip)):
+                return (j_n, j_level["tcbStatus"], j_level["tcbDate"],
+                        len(j_level.get("advisoryIDs", [])))
+        return None
+
+    j_platform = j_grade(uh(i_cpusvn), i_pcesvn, j_tee) or (-1, "reject",
+                                                            "reject", -1)
+    pin("(j) the platform level index", str(j_platform[0]), "0")
+    pin("(j) the platform status", j_platform[1], "UpToDate")
+    # The module walk: a lowered component 0 is skipped under major 1
+    # and refused under major 0, the same platform otherwise.
+    j_low = bytes([4]) + j_tee[1:]
+    require("(j) tdx component 0 below the level still grades under major 1",
+            j_grade(uh(i_cpusvn), i_pcesvn, j_low) is not None)
+    require("(j) tdx component 0 below the level rejects under major 0",
+            j_grade(uh(i_cpusvn), i_pcesvn,
+                    bytes([4, 0]) + j_tee[2:]) is None)
+    pin("(j) the platform tcb date", j_platform[2], "2024-03-13T00:00:00Z")
+    pin("(j) the platform advisory count", str(j_platform[3]), "0")
+
+    j_low = bytearray(uh(i_cpusvn))
+    j_low[7] = 0
+    j_control = j_grade(bytes(j_low), i_pcesvn, j_tee)
+    require("(j) a lowered cpusvn byte 7 moves the platform grade",
+            j_control is None or j_control[0] != j_platform[0])
+    pin("(j) the lowered cpusvn byte 7 verdict",
+        "reject" if j_control is None else j_control[1], "reject")
+    j_low_pcesvn = j_grade(uh(i_cpusvn), i_pcesvn - 1, j_tee)
+    require("(j) a lowered pcesvn moves the platform grade",
+            j_low_pcesvn is None or j_low_pcesvn[0] != j_platform[0])
+
+    j_report = v4[770:1154]
+    pin("(j) the qe report length", str(len(j_report)), "384")
+    pin("(j) the qe report miscselect at 16", hx(j_report[16:20]),
+        "00000000")
+    pin("(j) the qe report attributes at 48", hx(j_report[48:64]),
+        "1500000000000000e700000000000000")
+    pin("(j) the qe report mrsigner at 128", hx(j_report[128:160]),
+        "dc9e2a7c6f948f17474e34a7fc43ed030f7c1563f1babddf6340c82e0e54a8c5")
+    pin("(j) the qe report isvprodid at 256", str(le(j_report, 256, 2)), "2")
+    pin("(j) the qe report isvsvn at 258", str(le(j_report, 258, 2)), "6")
+
+    j_qi = json.loads(j_qe_doc)
+    pin("(j) the qe identity id", j_qi["id"], "TD_QE")
+    pin("(j) the qe identity version", str(j_qi["version"]), "2")
+    pin("(j) the qe identity validity window",
+        f"{j_qi['issueDate']} {j_qi['nextUpdate']}",
+        "2025-06-19T10:32:27Z 2025-07-19T10:32:27Z")
+    pin("(j) the qe identity evaluation data number",
+        str(j_qi["tcbEvaluationDataNumber"]), "17")
+    pin("(j) the qe identity mrsigner against the report",
+        j_qi["mrsigner"].lower(), hx(j_report[128:160]))
+    pin("(j) the qe identity isvprodid against the report",
+        str(j_qi["isvprodid"]), str(le(j_report, 256, 2)))
+    require("(j) the masked report miscselect is the identity miscselect",
+            le(j_report, 16, 4)
+            & int.from_bytes(uh(j_qi["miscselectMask"].lower()), "little")
+            == int.from_bytes(uh(j_qi["miscselect"].lower()), "little"))
+    require("(j) the masked report attributes are the identity attributes",
+            bytes(a & b for (a, b)
+                  in zip(j_report[48:64],
+                         uh(j_qi["attributesMask"].lower())))
+            == uh(j_qi["attributes"].lower()))
+    require("(j) a flipped attributes mask bit refuses the report",
+            bytes(a & b for (a, b)
+                  in zip(j_report[48:64],
+                         uh(j_qi["attributesMask"].lower())[::-1]))
+            != uh(j_qi["attributes"].lower()))
+
+    j_qe_levels = [(x["tcb"]["isvsvn"], x["tcbStatus"], x["tcbDate"])
+                   for x in j_qi["tcbLevels"]]
+    pin("(j) the qe identity level count", str(len(j_qe_levels)), "1")
+    j_qe_match = [x for x in j_qe_levels if x[0] <= le(j_report, 258, 2)]
+    j_qe_level = j_qe_match[0] if j_qe_match else (-1, "reject", "reject")
+    pin("(j) the qe status", j_qe_level[1], "UpToDate")
+    pin("(j) the qe tcb date", j_qe_level[2], "2024-03-13T00:00:00Z")
+    require("(j) a qe isvsvn below every level rejects",
+            not [x for x in j_qe_levels if x[0] <= 0])
+
+    # The CLOSED vocabulary of D6: thirty-one words verify can say plus
+    # the word envelope, which Collateral.of_envelope alone says.
+    j_words = [
+        "witness mismatch", "chain length", "root pin", "signing cert",
+        "signing cert signature", "signing cert not yet valid",
+        "signing cert expired", "tcb info signature", "tcb info",
+        "tcb info id", "tcb info version", "tcb type",
+        "tcb info not yet valid", "tcb info expired", "fmspc mismatch",
+        "pce id mismatch", "tdx module", "tdx module identity",
+        "tcb level", "revoked", "qe identity signature", "qe identity",
+        "qe identity id", "qe identity version",
+        "qe identity not yet valid", "qe identity expired",
+        "qe miscselect", "qe attributes", "qe mrsigner", "qe isvprodid",
+        "qe isvsvn", "envelope",
+    ]
+    pin("(j) the closed vocabulary size", str(len(j_words)), "32")
+    require("(j) every vocabulary word is distinct",
+            len(set(j_words)) == len(j_words))
+
+    j_pins = [
+        ("the tcb info document length", ["2934"]),
+        ("the tcb info document digest", [j_info_sha]),
+        ("the qe identity document length", ["461"]),
+        ("the qe identity document digest", [j_qe_sha]),
+        ("the tcb info signature", [j_col["tcb_info_signature"]]),
+        ("the qe identity signature", [j_col["qe_identity_signature"]]),
+        ("the signing certificate key halves", [j_key_x, j_key_y]),
+        ("the signing certificate validity window",
+         ["250506092500Z", "320506092500Z"]),
+        ("the pinned root beside the chain length word",
+         ["root_pin", "chain length"]),
+        ("the tcb info id beside the pin", ["TDX", "tcb info id"]),
+        ("the tcb info version beside the pin", ["3", "tcb info version"]),
+        ("the tcb type beside the pin", ["0", "tcb type"]),
+        ("the fmspc beside the tcb info", ["fmspc", i_fmspc]),
+        ("the pce id beside the tcb info", ["pce_id", i_pce_id]),
+        ("the tcb evaluation data number", ["17"]),
+        ("the tdx module mrsigner", ["00" * 48]),
+        ("the tdx module attributes mask", ["ffffffffffffffff"]),
+        ("the tdx module identity ids", ["TDX_01"]),
+        ("the tee tcb svn", ["06010300000000000000000000000000"]),
+        ("the platform status", ["Up_to_date"]),
+        ("the platform tcb date", ["20240313000000"]),
+        ("the cpusvn the level grades", [i_cpusvn]),
+        ("the pcesvn the level grades", [str(i_pcesvn)]),
+        # The three report windows: the WINDOW read at its offset beside
+        # the VALUE recomputed from the QE report body at 16, 256, 258.
+        ("the qe report miscselect",
+         ["(report ()) 16 4", hx(j_report[16:20])]),
+        ("the qe report attributes",
+         ["1500000000000000e700000000000000"]),
+        ("the qe report mrsigner", [hx(j_report[128:160])]),
+        ("the qe report isvprodid",
+         ["(report ()) 256 2", hx(j_report[256:258])]),
+        ("the qe report isvsvn",
+         ["(report ()) 258 2", hx(j_report[258:260])]),
+        # NAME-ONLY pins: the two accessor names and every vocabulary
+        # word below are checked for PRESENCE in a row, not for a value.
+        ("the qe status", ["qe_status"]),
+        ("the tcb evaluation data number accessor",
+         ["tcb_evaluation_data_number"]),
+    ] + [(f"the vocabulary word {j_word}", [j_word])
+         for j_word in j_words]
+
+    j_bodies = suite_bodies(tcb_suite_path)
+    if not j_bodies:
+        require(f"(j) the M27 suite holds no check row: {tcb_suite_path}",
+                False)
+    else:
+        for (j_name, j_needles) in j_pins:
+            require(f"(j) suite pin {j_name} sits in no check row",
+                    in_row(j_bodies, j_needles))
+    group("(j) M27 tcb pins", before)
+
+    # A synthetic W10 self-check, followed by independently derived pins.
+    before = fail
+    raw = read_fixture(envelope_path)
+    try:
+        envelope = json.loads(raw)
+        live_nvidia(envelope, v4[600:632].hex())
+        print("diff_quote: synthetic nvidia self-check ok")
+        checks = attest_checks(v4, raw, suite_bodies(attest_suite_path))
+        for name, ok in checks.items():
+            require("(k) " + name, ok)
+    except (ValueError, KeyError, TypeError, AttributeError, SystemExit) as exc:
+        require("(k) synthetic envelope parse/self-check: " + str(exc), False)
+    group("(k) M28 attest pins", before)
 
     return fail
 

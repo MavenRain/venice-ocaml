@@ -792,5 +792,389 @@ class ChainSuitePinTests(unittest.TestCase):
                  [self.probe.hx(self.probe.SGX_EXT_OID) + "01"])
 
 
+class TcbSuitePinTests(unittest.TestCase):
+    """One case per require of the M27 group (j), each with a control.
+
+    Every case asserts the TRUE leg on the real collateral and the FALSE
+    leg on a mutated copy or a moved value, so a require that always
+    passes fails here. The first case runs the harness and asserts its
+    group (j) line, which stays RED until test/test_tcbx.ml lands.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.probe = load_probe()
+        probe = cls.probe
+        cls.v4 = (ROOT / "fixtures/tdx_quote_v4.bin").read_bytes()
+        cls.col = json.loads(probe.collateral_json_path.read_text())
+        cls.bodies = probe.suite_bodies(probe.tcb_suite_path)
+        cls.info = cls.col["tcb_info"]
+        cls.qe_doc = cls.col["qe_identity"]
+        cls.ti = json.loads(cls.info)
+        cls.qi = json.loads(cls.qe_doc)
+        cls.root = (ROOT / "fixtures/collateral/TrustedRootCA.der").read_bytes()
+        cls.root_fields = probe.cert_fields(cls.root)
+        cls.root_point = probe.spki_point(cls.root,
+                                          cls.root_fields["spki"])["point"]
+        cls.ders = probe.chain_ders(cls.col["tcb_info_issuer_chain"].encode())
+        cls.fields = probe.cert_fields(cls.ders[0])
+        cls.point = probe.spki_point(cls.ders[0], cls.fields["spki"])["point"]
+        cls.key = (probe.hx(cls.point[1:33]), probe.hx(cls.point[33:65]))
+        cls.report = cls.v4[770:1154]
+        cls.tee = cls.v4[48:64]
+        cls.cpusvn = bytes.fromhex("03030202040100050000000000000000")
+        cls.pcesvn = 11
+
+    def row(self, needles: list, control: list) -> None:
+        """One needle list sits in a check row and its control does not."""
+        self.assertTrue(self.probe.in_row(self.bodies, needles))
+        self.assertFalse(self.probe.in_row(self.bodies, control))
+
+    def window(self, off: int, size: int) -> None:
+        """One QE report window pins its READ beside its recomputed VALUE.
+
+        The control moves the top bit of the last byte of the window.
+        """
+        hx = self.probe.hx
+        moved = bytearray(self.report)
+        moved[off + size - 1] ^= 0x80
+        read = f"(report ()) {off} {size}"
+        self.row([read, hx(self.report[off:off + size])],
+                 [read, hx(bytes(moved[off:off + size]))])
+
+    def test_qe_report_miscselect_value_sits_in_a_check_row(self):
+        self.window(16, 4)
+
+    def test_qe_report_isvprodid_value_sits_in_a_check_row(self):
+        self.window(256, 2)
+
+    def test_qe_report_isvsvn_value_sits_in_a_check_row(self):
+        self.window(258, 2)
+
+    def test_tdx_component_0_is_skipped_under_module_major_1(self):
+        """j_grade walks tdxtcbcomponents from index 2 under major 1."""
+        grade = self.probe_grade()
+        low = bytes([4]) + self.tee[1:]
+        self.assertIsNotNone(grade(self.cpusvn, self.pcesvn, low))
+        self.assertIsNone(grade(self.cpusvn, self.pcesvn,
+                                bytes([4, 0]) + self.tee[2:]))
+
+    def probe_grade(self):
+        """The j_grade closure of the probe, rebuilt over the fixture."""
+        ti = self.ti
+
+        def grade(cpu: bytes, pcesvn: int, tee: bytes):
+            skip = 2 if tee[1] > 0 else 0
+            for (n, level) in enumerate(ti["tcbLevels"]):
+                tcb = level["tcb"]
+                if (all(c["svn"] <= cpu[k]
+                        for (k, c) in enumerate(tcb["sgxtcbcomponents"]))
+                        and tcb["pcesvn"] <= pcesvn
+                        and all(c["svn"] <= tee[k]
+                                for (k, c) in enumerate(tcb["tdxtcbcomponents"])
+                                if k >= skip)):
+                    return (n, level["tcbStatus"])
+            return None
+        return grade
+
+    def verify(self, signature: str, message: bytes) -> bool:
+        """One detached signature under the signing key of the chain."""
+        return self.probe.p256_verify_message(
+            self.key[0], self.key[1], signature[:64], signature[64:],
+            message)
+
+    def grade(self, cpu: bytes, pcesvn: int, tee: bytes):
+        """The FIRST tcbLevel at or below every platform value."""
+        for (n, level) in enumerate(self.ti["tcbLevels"]):
+            tcb = level["tcb"]
+            if (all(c["svn"] <= cpu[k]
+                    for (k, c) in enumerate(tcb["sgxtcbcomponents"]))
+                    and tcb["pcesvn"] <= pcesvn
+                    and all(c["svn"] <= tee[k]
+                            for (k, c) in enumerate(tcb["tdxtcbcomponents"]))):
+                return (n, level["tcbStatus"], level["tcbDate"])
+        return None
+
+    def test_group_j_runs_and_reports_ok(self):
+        result = subprocess.run(
+            [sys.executable, "-S", str(PROBE)],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("(j) M27 tcb pins ok", result.stdout)
+
+    def test_the_envelope_carries_the_six_members_and_the_three_crls(self):
+        read = ("tcb_info", "tcb_info_signature", "tcb_info_issuer_chain",
+                "qe_identity", "qe_identity_signature",
+                "qe_identity_issuer_chain")
+        crls = ("pck_crl", "pck_crl_issuer_chain", "root_ca_crl")
+        self.assertTrue(all(k in self.col for k in read))
+        self.assertTrue(all(k in self.col for k in crls))
+        self.assertEqual(len(self.col), 9)
+        self.assertFalse("tcb_info_chain" in self.col)
+
+    def test_the_two_issuer_chains_are_the_same_bytes(self):
+        self.assertEqual(self.col["tcb_info_issuer_chain"],
+                         self.col["qe_identity_issuer_chain"])
+        self.assertNotEqual(self.col["tcb_info_issuer_chain"],
+                            self.col["qe_identity_issuer_chain"] + "\n")
+
+    def test_the_document_lengths_and_digests(self):
+        self.assertEqual(len(self.info), 2934)
+        self.assertEqual(len(self.qe_doc), 461)
+        self.assertEqual(
+            hashlib.sha256(self.info.encode()).hexdigest(),
+            "369f99a122169e850d32bacb7970da74356f9746526256818124d9f646dd6ace")
+        self.assertNotEqual(
+            hashlib.sha256((self.info + " ").encode()).hexdigest(),
+            "369f99a122169e850d32bacb7970da74356f9746526256818124d9f646dd6ace")
+        self.assertEqual(
+            hashlib.sha256(self.qe_doc.encode()).hexdigest(),
+            "261a8b43ded29851e71f61b094e0aea2f12a6e6b75e38da2a49447e97ae15e96")
+
+    def test_block_one_issuer_is_the_pinned_root_subject(self):
+        self.assertEqual(self.fields["issuer"], self.root_fields["subject"])
+        self.assertNotEqual(self.fields["subject"],
+                            self.root_fields["subject"])
+
+    def test_block_two_is_the_pinned_root_bytes(self):
+        self.assertEqual(len(self.ders), 2)
+        self.assertEqual(self.ders[1], self.root)
+        self.assertNotEqual(self.ders[0], self.root)
+
+    def test_the_pinned_root_key_verifies_the_signing_certificate(self):
+        probe = self.probe
+        halves = probe.sig_halves(self.ders[0], self.fields["sig_bits"])
+        self.assertTrue(probe.p256_verify_message(
+            probe.hx(self.root_point[1:33]), probe.hx(self.root_point[33:65]),
+            probe.hx(halves["r"]), probe.hx(halves["s"]),
+            self.fields["tbs_window"]))
+        self.assertFalse(probe.p256_verify_message(
+            probe.hx(self.root_point[1:33]), probe.hx(self.root_point[33:65]),
+            probe.hx(halves["r"]), probe.hx(halves["s"]),
+            self.fields["tbs_window"] + b"\x00"))
+
+    def test_both_chains_carry_the_same_signing_key(self):
+        probe = self.probe
+        other = probe.chain_ders(
+            self.col["qe_identity_issuer_chain"].encode())
+        fields = probe.cert_fields(other[0])
+        point = probe.spki_point(other[0], fields["spki"])["point"]
+        self.assertEqual(probe.hx(point[1:33]), self.key[0])
+        self.assertNotEqual(probe.hx(point[1:33]), self.key[1])
+
+    def test_the_signing_key_verifies_both_documents(self):
+        self.assertTrue(self.verify(self.col["tcb_info_signature"],
+                                    self.info.encode()))
+        self.assertTrue(self.verify(self.col["qe_identity_signature"],
+                                    self.qe_doc.encode()))
+        self.assertFalse(self.verify(self.col["tcb_info_signature"],
+                                     (self.info + " ").encode()))
+        self.assertFalse(self.verify(self.col["qe_identity_signature"],
+                                     self.info.encode()))
+
+    def test_every_tcb_level_carries_sixteen_components_of_each_kind(self):
+        counts = [(len(x["tcb"]["sgxtcbcomponents"]),
+                   len(x["tcb"]["tdxtcbcomponents"]))
+                  for x in self.ti["tcbLevels"]]
+        self.assertTrue(all(x == (16, 16) for x in counts))
+        self.assertFalse(all(x == (16, 15) for x in counts))
+
+    def test_the_tdx_module_matches_the_seam_values(self):
+        module = self.ti["tdxModule"]
+        mask = int.from_bytes(bytes.fromhex(module["attributesMask"]),
+                              "little")
+        wanted = int.from_bytes(bytes.fromhex(module["attributes"]), "little")
+        seam = self.probe.le(self.v4, 160, 8)
+        self.assertEqual(module["mrsigner"].lower(),
+                         self.probe.hx(self.v4[112:160]))
+        self.assertEqual(seam & mask, wanted)
+        self.assertNotEqual((seam + 1) & mask, wanted)
+
+    def test_the_module_identity_of_the_seam_major_version(self):
+        major = self.tee[1]
+        self.assertEqual(major, 1)
+        named = [x for x in self.ti["tdxModuleIdentities"]
+                 if x["id"] == f"TDX_{major:02d}"]
+        self.assertEqual(len(named), 1)
+        self.assertEqual([x for x in self.ti["tdxModuleIdentities"]
+                          if x["id"] == "TDX_99"], [])
+
+    def test_the_module_grade_and_the_isvsvn_control(self):
+        named = [x for x in self.ti["tdxModuleIdentities"]
+                 if x["id"] == "TDX_01"][0]
+        levels = [(x["tcb"]["isvsvn"], x["tcbStatus"])
+                  for x in named["tcbLevels"]]
+        matched = [x for x in levels if x[0] <= self.tee[0]]
+        self.assertEqual(matched[0][1], "UpToDate")
+        self.assertEqual([x for x in levels if x[0] <= 0], [])
+
+    def test_the_platform_grade_and_the_cpusvn_control(self):
+        graded = self.grade(self.cpusvn, self.pcesvn, self.tee)
+        self.assertEqual(graded, (0, "UpToDate", "2024-03-13T00:00:00Z"))
+        lowered = bytearray(self.cpusvn)
+        lowered[7] = 0
+        control = self.grade(bytes(lowered), self.pcesvn, self.tee)
+        self.assertTrue(control is None or control[0] != graded[0])
+        self.assertIsNone(control)
+
+    def test_the_platform_grade_and_the_pcesvn_control(self):
+        graded = self.grade(self.cpusvn, self.pcesvn, self.tee)
+        control = self.grade(self.cpusvn, self.pcesvn - 1, self.tee)
+        self.assertTrue(control is None or control[0] != graded[0])
+        self.assertIsNotNone(graded)
+
+    def test_the_qe_report_windows_at_the_d7_offsets(self):
+        probe = self.probe
+        self.assertEqual(len(self.report), 384)
+        self.assertEqual(probe.hx(self.report[16:20]), "00000000")
+        self.assertEqual(probe.hx(self.report[48:64]),
+                         "1500000000000000e700000000000000")
+        self.assertEqual(
+            probe.hx(self.report[128:160]),
+            "dc9e2a7c6f948f17474e34a7fc43ed030f7c1563f1babddf6340c82e0e54a8c5")
+        self.assertEqual(probe.le(self.report, 256, 2), 2)
+        self.assertEqual(probe.le(self.report, 258, 2), 6)
+        self.assertNotEqual(probe.le(self.report, 256, 2),
+                            probe.le(self.report, 258, 2))
+
+    def test_the_masked_miscselect_and_attributes_of_the_report(self):
+        probe = self.probe
+        mask = int.from_bytes(bytes.fromhex(self.qi["miscselectMask"]),
+                              "little")
+        wanted = int.from_bytes(bytes.fromhex(self.qi["miscselect"]),
+                                "little")
+        self.assertEqual(probe.le(self.report, 16, 4) & mask, wanted)
+        self.assertNotEqual((probe.le(self.report, 16, 4) + 1) & mask, wanted)
+        attributes = bytes.fromhex(self.qi["attributes"])
+        attributes_mask = bytes.fromhex(self.qi["attributesMask"])
+        self.assertEqual(
+            bytes(a & b for (a, b) in zip(self.report[48:64],
+                                          attributes_mask)),
+            attributes)
+        self.assertNotEqual(
+            bytes(a & b for (a, b) in zip(self.report[48:64],
+                                          attributes_mask[::-1])),
+            attributes)
+
+    def test_the_qe_identity_fields_and_the_matched_level(self):
+        probe = self.probe
+        self.assertEqual(self.qi["id"], "TD_QE")
+        self.assertEqual(self.qi["version"], 2)
+        self.assertEqual(self.qi["mrsigner"].lower(),
+                         probe.hx(self.report[128:160]))
+        self.assertEqual(self.qi["isvprodid"], probe.le(self.report, 256, 2))
+        levels = [(x["tcb"]["isvsvn"], x["tcbStatus"], x["tcbDate"])
+                  for x in self.qi["tcbLevels"]]
+        matched = [x for x in levels if x[0] <= probe.le(self.report, 258, 2)]
+        self.assertEqual(matched[0][1], "UpToDate")
+        self.assertEqual(matched[0][2], "2024-03-13T00:00:00Z")
+        self.assertEqual([x for x in levels if x[0] <= 0], [])
+
+    def test_the_closed_vocabulary_is_thirty_two_distinct_words(self):
+        words = [
+            "witness mismatch", "chain length", "root pin", "signing cert",
+            "signing cert signature", "signing cert not yet valid",
+            "signing cert expired", "tcb info signature", "tcb info",
+            "tcb info id", "tcb info version", "tcb type",
+            "tcb info not yet valid", "tcb info expired", "fmspc mismatch",
+            "pce id mismatch", "tdx module", "tdx module identity",
+            "tcb level", "revoked", "qe identity signature", "qe identity",
+            "qe identity id", "qe identity version",
+            "qe identity not yet valid", "qe identity expired",
+            "qe miscselect", "qe attributes", "qe mrsigner", "qe isvprodid",
+            "qe isvsvn", "envelope",
+        ]
+        self.assertEqual(len(words), 32)
+        self.assertEqual(len(set(words)), 32)
+        self.assertNotEqual(len(set(words + ["revoked"])), 33)
+
+    def test_the_document_pins_sit_in_check_rows(self):
+        self.row(["2934"], ["2935"])
+        self.row([self.col["tcb_info_signature"]],
+                 [self.col["tcb_info_signature"] + "00"])
+        self.row([self.key[0], self.key[1]], [self.key[0] + "00"])
+
+    def test_the_grade_pins_sit_in_check_rows(self):
+        self.row(["Up_to_date"], ["Up_to_date_never"])
+        self.row(["06010300000000000000000000000000"],
+                 ["06010300000000000000000000000001"])
+        self.row(["TDX_01"], ["TDX_99"])
+
+    def test_the_vocabulary_words_sit_in_check_rows(self):
+        self.row(["witness mismatch"], ["witness mismatched"])
+        self.row(["tdx module identity"], ["tdx module identities"])
+        self.row(["qe isvsvn"], ["qe isvsvns"])
+
+
+class AttestPinTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.probe = load_probe()
+        cls.v4 = (ROOT / "fixtures/tdx_quote_v4.bin").read_bytes()
+        cls.raw = (ROOT / "fixtures/attestation_synthetic_v4.json").read_bytes()
+        cls.bodies = cls.probe.suite_bodies(cls.probe.attest_suite_path)
+
+    def checks(self, body=None, bodies=None):
+        raw = self.raw if body is None else json.dumps(body).encode()
+        return self.probe.attest_checks(
+            self.v4, raw, self.bodies if bodies is None else bodies)
+
+    def test_real_pins(self):
+        self.assertTrue(all(self.checks().values()))
+
+    def test_every_suite_pin_requires_an_executable_literal(self):
+        checks = self.checks(bodies=[])
+        for name, ok in checks.items():
+            if name.startswith(("suite ", "word ")):
+                with self.subTest(name=name):
+                    self.assertFalse(ok)
+
+    def test_labels_and_comments_cannot_satisfy_pins(self):
+        source = '\n'.join(self.bodies)
+        comments = self.probe.strip_ocaml_comments('(* ' + source + ' *)')
+        self.assertEqual(self.probe.check_rows(comments), [])
+        self.assertFalse(self.probe.in_row(['true'], ["6676"]))
+
+    def test_every_content_check_has_a_negative_control(self):
+        mutations = [
+            ("quote member", "intel_quote", "AAAA"),
+            ("nonce window", "nonce", "00" * 32),
+            ("key SEC1", "signing_key", "05" + "00" * 64),
+            ("key address", "signing_address", "00" * 20),
+        ]
+        for name, member, value in mutations:
+            with self.subTest(name=name):
+                body = json.loads(self.raw)
+                body[member] = value
+                self.assertFalse(self.checks(body)[name])
+        for name, member, value in [
+            ("payload nonce", "nonce", "00" * 32),
+            ("payload evidence", "evidence_list", []),
+            ("payload evidence", "evidence_list", "not a list"),
+            ("payload arch", "arch", "changed"),
+        ]:
+            with self.subTest(name=name, value=value):
+                body = json.loads(self.raw)
+                inner = json.loads(body["nvidia_payload"])
+                inner[member] = value
+                body["nvidia_payload"] = json.dumps(inner)
+                self.assertFalse(self.checks(body)[name])
+
+    def test_tautology_is_detected(self):
+        source = PROBE.read_text().replace("sys.exit(main(sys.argv[1:]))", "")
+        needle = 'body["intel_quote"] == base64.b64encode(v4).decode()'
+        self.assertEqual(source.count(needle), 1)
+        mutated = types.ModuleType("mutated_attest_probe")
+        mutated.__file__ = str(PROBE)
+        exec(compile(source.replace(needle, "True"), str(PROBE), "exec"),
+             mutated.__dict__)
+        body = json.loads(self.raw)
+        body["intel_quote"] = "AAAA"
+        self.assertFalse(self.checks(body)["quote member"])
+        self.assertTrue(mutated.attest_checks(
+            self.v4, json.dumps(body).encode(), self.bodies)["quote member"])
+
+
 if __name__ == "__main__":
     unittest.main()

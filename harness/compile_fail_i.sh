@@ -73,3 +73,19 @@ cat > "$cfdir/cf_p_key_has_no_to_bytes.ml" <<'CF_P'
 let leak (k : Venice__Gcmx.Key.t) : string = Venice__Gcmx.Key.to_bytes k
 CF_P
 expect_fail cf_p_key_has_no_to_bytes.ml "Unbound value" "Venice__Gcmx.Key.to_bytes"
+
+# M28: both witness levels compile, but structural cannot become full.
+cat > "$cfdir/cf_q_attest_control.ml" <<'CF_Q'
+module A = Venice__Attestx
+module P = Venice__Policyx
+let structural (w : P.Expect.structural A.Attested.t) = A.Attested.policy w
+let full (w : P.Expect.full A.Attested.t) = A.Attested.policy w
+CF_Q
+(cd "$cfdir" && ocamlc -c -color never -I "$cfinc" cf_q_attest_control.ml)
+echo "compile_fail: attestation control ok"
+cat > "$cfdir/cf_q_attest_level.ml" <<'CF_Q'
+module A = Venice__Attestx
+module P = Venice__Policyx
+let promote (w : P.Expect.structural A.Attested.t) : P.Expect.full A.Attested.t = w
+CF_Q
+expect_fail cf_q_attest_level.ml "P.Expect.structural" "P.Expect.full" "not compatible"

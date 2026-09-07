@@ -208,3 +208,52 @@
  (name test_derx)
  (modules test_derx fixture_der fixture_root)
  (libraries venice sha2))
+
+; M27 embeds the SAME v4 fixture a SIXTH time and the pinned Intel PCS
+; collateral envelope a first time (D11).  A dune module belongs to
+; exactly ONE stanza, and fixture_v4, fixture_policy, fixture_sig,
+; fixture_der and fixture_root are all taken, so the TCB suite owns its
+; own two generated modules and embed.ml is not edited.  The stanza
+; links sha2 beside venice, because group (a) recomputes the envelope
+; sha256 and the two document sha256 values from the embedded bytes
+; through Sha2.Sha256.digest and lib/venice.mli exports no digest (A11).
+(rule
+ (targets fixture_tcb.ml)
+ (deps ../fixtures/tdx_quote_v4.bin)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run %{exe:embed.exe} %{deps}))))
+
+(rule
+ (targets fixture_collateral.ml)
+ (deps ../fixtures/collateral/tdx_quote_collateral.json)
+ (action
+  (with-stdout-to
+   %{targets}
+   (run %{exe:embed.exe} %{deps}))))
+
+(test
+ (name test_tcbx)
+ (modules test_tcbx fixture_tcb fixture_collateral)
+ (libraries venice sha2))
+
+(rule
+ (targets fixture_attest_quote.ml)
+ (deps ../fixtures/tdx_quote_v4.bin)
+ (action (with-stdout-to %{targets} (run %{exe:embed.exe} %{deps}))))
+
+(rule
+ (targets fixture_attest_envelope.ml)
+ (deps ../fixtures/attestation_synthetic_v4.json)
+ (action (with-stdout-to %{targets} (run %{exe:embed.exe} %{deps}))))
+
+(rule
+ (targets fixture_attest_collateral.ml)
+ (deps ../fixtures/collateral/tdx_quote_collateral.json)
+ (action (with-stdout-to %{targets} (run %{exe:embed.exe} %{deps}))))
+
+(test
+ (name test_attestx)
+ (modules test_attestx fixture_attest_quote fixture_attest_envelope fixture_attest_collateral)
+ (libraries venice sha2))

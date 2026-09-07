@@ -79,15 +79,18 @@ behavior, limits, timeouts, and environment handling.
 
 Client-side TDX attestation and E2EE are under development. The repository
 contains internal cryptographic primitives, a TDX v4 quote parser, measurement
-and REPORTDATA policy checks, and quote signature checks using a supplied PCK
-leaf key. These internal modules are not a complete public attestation API.
+and REPORTDATA policy checks, quote signature verification, PCK certificate
+validation against a pinned Intel root, and signed TCB and QE identity checks.
+The internal attestation pipeline composes these checks while preserving the
+full or structural expectation level.  These modules are not yet a public
+attestation API.
 
-Certificate-chain validation to an Intel trust root, TCB and QE identity
-evaluation, the composed attestation pipeline, and encrypted session
-establishment and streaming remain planned work. The current signature checker
-trusts the supplied PCK key; it does not authenticate that key's certificate
-chain. The cryptographic implementation does not provide a blanket
-constant-time guarantee.
+The synthetic response fixture demonstrates rejection paths, not a successful
+Venice attestation.  Its real signed quote carries Phala's binding.  GPU payloads
+receive structural and nonce checks only;  NRAS authentication and CRL checks
+remain outside the pipeline.  Public attestation integration, encrypted session
+establishment, and encrypted streaming remain planned work.  The cryptographic
+implementation does not provide a blanket constant-time guarantee.
 
 See the milestone roadmap and current limitations in [DESIGN.md](DESIGN.md).
 The package metadata describes the intended architecture; this README describes

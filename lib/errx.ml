@@ -7,7 +7,8 @@
    the key, request, wire-head and transport domains, M14 the stream
    accumulator domain, M15 the never-sent transport failure and the
    client's own rejections, M23 the quote domain, M24 the policy
-   domain, M25 the signature domain, M26 the certificate domain. *)
+   domain, M25 the signature domain, M26 the certificate domain, M27
+   the TCB grading domain. *)
 
 type t =
   | Hex_invalid of string
@@ -52,6 +53,15 @@ type t =
      vocabulary of fifteen words, so the suite and the harness can
      pin every rejection text. *)
   | Cert_invalid of string
+  (* M27 D5: the TCB unit refused the platform grade or the QE identity.
+     The reason names the FIRST check that failed and comes from a
+     CLOSED vocabulary of thirty-one words reachable from verify plus
+     the word envelope, which only Collateral.of_envelope says, so the
+     whole vocabulary is thirty-two words and the suite and the harness
+     can pin every rejection text. *)
+  | Tcb_invalid of string
+  (* M28: the envelope and GPU structural checks. *)
+  | Attest_invalid of string
 
 let to_string (e : t) : string =
   match e with
@@ -77,3 +87,5 @@ let to_string (e : t) : string =
   | Policy_rejected s -> "policy: " ^ s
   | Sig_invalid s -> "sig: " ^ s
   | Cert_invalid s -> "cert: " ^ s
+  | Tcb_invalid s -> "tcb: " ^ s
+  | Attest_invalid s -> "attest: " ^ s

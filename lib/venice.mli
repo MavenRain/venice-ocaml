@@ -30,6 +30,8 @@ module Error : sig
     | Policy_rejected of string
     | Sig_invalid of string
     | Cert_invalid of string
+    | Tcb_invalid of string
+    | Attest_invalid of string
 
   val to_string : t -> string
   (* M15: Transport_unreachable prints under "unreachable: " and means
@@ -42,7 +44,12 @@ module Error : sig
      policy check that refused a decoded quote. M25: Sig_invalid prints
      under "sig: " and names the signature check that refused a parsed
      quote. M26: Cert_invalid prints under "cert: " and names the
-     certificate check that refused the PCK chain. *)
+     certificate check that refused the PCK chain. M27: Tcb_invalid
+     prints under "tcb: " and names the TCB grading check that refused
+     the pinned Intel PCS collateral, the platform TCB level or the QE
+     identity. M28: Attest_invalid prints under "attest: " and names the
+     envelope or GPU structural check that refused the attestation
+     response. *)
 end
 
 module Cursor : sig
