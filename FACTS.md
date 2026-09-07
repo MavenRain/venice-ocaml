@@ -377,6 +377,22 @@ line below tagged `[live check pending]` closes the day it runs.
   `X-Venice-TEE-Signing-Algo: ecdsa`.  [docs]
 - All `user` and `system` message contents must be encrypted, as hex,
   when the E2EE headers are present.  [docs]
+- M30 request framing is also tag-last:
+  `client_public_key65 || nonce12 || ciphertext || tag16`, rendered as
+  lowercase hex in each message's `content`. The official guide's step 4
+  Python example prefixes the public key and nonce to `AESGCM.encrypt`
+  output, whose final 16 bytes are the tag. It supplies no AAD. Step 5
+  requires streaming and the three headers above.
+  [Official guide, steps 4 and 5](https://docs.venice.ai/guides/features/tee-e2ee-models),
+  checked 2026-09-06. M30 uses M29's session prompt key, with a separate
+  nonce per message. Independent executable frame comparisons establish
+  local agreement; live interoperability remains M31.
+- M30 deliberately accepts only bare-string user/system content without
+  names. Other roles, multipart content, tools, response schemas, stop
+  strings, cache keys, character slugs and enabled search reject locally.
+  It explicitly enables E2EE and disables web search, scraping and X search.
+  These are SDK restrictions, not claims that Venice rejects every such
+  shape. Sampling options and model routing metadata remain unencrypted.
 - Response chunks are hex, at least 186 hex characters, that is 93
   bytes, and the layout puts the TAG LAST:
   `65-byte ephemeral pubkey || 12-byte GCM nonce || ciphertext || 16-byte tag`.

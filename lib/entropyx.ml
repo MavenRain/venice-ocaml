@@ -110,6 +110,25 @@ module Fresh = struct
     | () -> Ok ()
 end
 
+module Gcm_fresh = struct
+  type t = { nonce : Gcmx.Nonce.t; consumed : bool Atomic.t }
+
+  let make ~(entropy : entropy) : (t, Errx.t) result =
+    Result.bind (draw entropy) (fun bytes ->
+        let nonce =
+          Option.bind (Bytesx.take bytes 0 (Gcmx.nonce_len ())) Gcmx.Nonce.of_bytes
+        in
+        Result.map
+          (fun nonce -> { nonce; consumed = Atomic.make false })
+          (Option.to_result ~none:(Errx.Session_invalid "entropy length") nonce))
+
+  let nonce (fresh : t) : Gcmx.Nonce.t = fresh.nonce
+
+  let consume (fresh : t) : (unit, Errx.t) result =
+    if Atomic.compare_and_set fresh.consumed false true then Ok ()
+    else invalid "gcm nonce consumed"
+end
+
 module Fake = struct
   let make (chunks : string list) : t = Script (Atomic.make chunks)
 

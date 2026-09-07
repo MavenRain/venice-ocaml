@@ -18,7 +18,7 @@
    Out of scope, each with its owner.  No IV outside 96 bits, so no
    GHASH-derived J0;  no tag truncation;  no streaming or incremental
    API, because M32 calls unseal once per chunk;  no nonce generation,
-   which M29 and M30 own through Fresh.t;  no key derivation, which the
+   which M30 owns through Gcm_fresh and the session registry; no key derivation, which the
    M17 HKDF owns;  no hex framing, which M30's Ciphertext.t owns;  and
    no GCM-SIV. *)
 
@@ -34,7 +34,7 @@ end
 
 module Nonce : sig
   (* The 96-bit GCM nonce.  Uniqueness per key is the CALLER's
-     obligation, M30's Fresh.t under model spec P3 (DESIGN.md:56);
+     obligation, M30's session registry under model spec P3 (DESIGN.md:56);
      this unit cannot check it, and a repeat is catastrophic. *)
   type t
 

@@ -104,7 +104,24 @@ Venice attestation.  Its real signed quote carries Phala's binding.  GPU payload
 receive structural and nonce checks only;  NRAS authentication and CRL checks
 remain outside the pipeline. Session establishment derives an ephemeral
 secp256k1 keypair and an opaque AES key through ECDH and HKDF-SHA256.
-Encrypted requests and streaming remain planned work. No successful live
+`Session.request ~entropy session chat` now prepares an encrypted HTTP request.
+It validates the complete chat before drawing entropy, encrypts each user or
+system text message with its own nonce, and assembles streaming and E2EE
+settings and the attested public-key headers. Send the immutable result through
+`Transport`. Response decryption and encrypted streaming remain planned work.
+
+This first request path accepts bare-string user/system content without names.
+Other roles, multipart content, tools, schemas, stop strings, cache keys,
+characters and enabled search reject. Sampling options and routing metadata
+remain visible. `Session.encrypt ~fresh session plaintext` also returns an
+opaque `Ciphertext.t`; obtain its distinct nonce handle with `Gcm_fresh.make`.
+Each attempt burns the handle, including failures. Session aliases share an
+atomic registry that rejects duplicate nonce bytes from different handles and
+caps reservations at 65,536 per session. A new session is then required.
+Nonce and ephemeral-key generation depend on OS entropy; the registry does not
+coordinate separate processes or independently established sessions.
+
+No successful live
 Venice session is covered by the current fixtures. The cryptographic
 implementation does not provide a blanket constant-time guarantee; secret
 zeroization remains planned hardening work.

@@ -10,8 +10,8 @@
 type t
 type entropy = t
 
-(* Construction performs no IO. Each scalar or Fresh.make call reads
-   the source when it needs a draw. *)
+(* Construction performs no IO. Each scalar, Fresh.make or Gcm_fresh.make
+   call reads the source when it needs a draw. *)
 val system : unit -> t
 
 (* Rejection sampling of a secp256k1 scalar in 1 .. n-1. Each attempt
@@ -37,6 +37,25 @@ module Fresh : sig
      public nonce. A mismatch is "nonce mismatch" and still burns it.
      Every later call is "fresh consumed", even with the right nonce. *)
   val consume : t -> nonce:Policyx.Nonce.t -> (unit, Errx.t) result
+end
+
+module Gcm_fresh : sig
+  (* A GCM nonce with a shared atomic consumption bit, distinct from
+     the 32-byte attestation Fresh.t. Aliases and domains share one use. *)
+  type t
+
+  (* Consumes one validated 32-byte draw and takes its first 12 bytes.
+     The remaining 20 bytes are discarded; no scalar sampling occurs. *)
+  val make : entropy:entropy -> (t, Errx.t) result
+
+  (* Internal wire-header projection. It remains available after use
+     without minting another handle. Venice does not expose it. *)
+  val nonce : t -> Gcmx.Nonce.t
+
+  (* Atomically burns the handle. Every later call returns
+     "gcm nonce consumed". The host encrypt caller must consume before
+     any fallible downstream operation and never undo consumption. *)
+  val consume : t -> (unit, Errx.t) result
 end
 
 module Fake : sig

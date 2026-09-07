@@ -50,6 +50,8 @@ module Tee = struct
 end
 
 module Fresh = Entropyx.Fresh
+module Gcm_fresh = Entropyx.Gcm_fresh
+module Ciphertext = Encryptx.Ciphertext
 module Session = Sessionx
 
 module Audio_format = Msgx.Audio_format

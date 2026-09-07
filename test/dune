@@ -264,6 +264,30 @@
  (libraries venice unix))
 
 (test
+ (name test_gcm_fresh)
+ (modules test_gcm_fresh)
+ (libraries venice unix))
+
+(test
+ (name test_encryptx)
+ (modules test_encryptx)
+ (libraries venice))
+
+; Exercise the production host encryption boundary with scripted admission
+; evidence. Key derivation, entropy, nonce state and encryption remain real.
+(rule
+ (targets encrypt_boundary_impl.ml)
+ (deps ../lib/sessionx.ml)
+ (action
+  (with-stdout-to %{targets}
+   (progn (echo "open Encrypt_boundary_fakes\n") (cat %{deps})))))
+
+(test
+ (name test_encrypt_boundary)
+ (modules test_encrypt_boundary encrypt_boundary_fakes encrypt_boundary_impl)
+ (libraries venice unix))
+
+(test
  (name test_sessx)
  (modules test_sessx)
  (libraries venice))

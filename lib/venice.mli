@@ -1783,6 +1783,21 @@ module Fresh : sig
   val nonce : t -> Tee.Nonce.t
 end
 
+module Gcm_fresh : sig
+  type t
+  (* A distinct one-use GCM nonce handle. Construction takes the first
+     12 bytes of a fresh 32-byte OS entropy draw. No byte constructor,
+     nonce projection or consumption primitive is public. *)
+  val make : entropy:Entropy.t -> (t, Error.t) result
+end
+
+module Ciphertext : sig
+  type t
+  (* Lowercase hex of public key, nonce, ciphertext and tag, in order.
+     Only Session.encrypt mints public values of this type. *)
+  val to_hex : t -> string
+end
+
 module Session : sig
   type 'c t
   module Cpu_only : sig
@@ -1802,7 +1817,7 @@ module Session : sig
      Samples an ephemeral scalar with at most 128 rejection attempts;
      derives HKDF-SHA256(x(ECDH), empty salt, "ecdsa_encryption", 32).
      The caller supplies a current trusted instant. Scalar arithmetic
-     inherits Secpx's variable-time behavior. Encrypted send is M30. *)
+     inherits Secpx's variable-time behavior. *)
   val establish : entropy:Entropy.t -> fresh:Fresh.t ->
     cpu_only:Cpu_only.t -> now:Tee.Now.t ->
     attested:Tee.Expect.full Tee.Attested.t ->
@@ -1810,4 +1825,25 @@ module Session : sig
   val client_pubkey_hex : 'c t -> string
   val model_pubkey_hex : 'c t -> string
   val model_id : 'c t -> string
+
+  (* Burns fresh before any attempt, including failure. Session aliases
+     share a nonce registry across domains: duplicate nonce bytes from
+     different handles also reject. At most 65,536 nonces may be reserved
+     per session, including failures, before a new session is required.
+     Plaintext is capped at 2,000,000 bytes. AAD is empty. *)
+  val encrypt : fresh:Gcm_fresh.t -> 'c t -> string ->
+    (Ciphertext.t, Error.t) result
+
+  (* Encrypt a user/system text chat into an immutable HTTP request.
+     Checks model identity and every message/option before entropy is
+     drawn, then uses a new nonce for each message. Rejects other roles,
+     multipart content, message names, tools, response schemas, stop
+     strings, cache keys, character slugs and enabled search features.
+     Forces streaming and E2EE on and web/X search and scraping off.
+     Sampling options and routing metadata remain visible on the wire.
+     No partial request is returned if encryption or entropy fails.
+     Send the result through Transport; encrypted response handling
+     remains M32. Retransmission reuses the sealed bytes, never reseals. *)
+  val request : entropy:Entropy.t -> 'c t -> 'c Chat.t ->
+    (Http.Request.t, Error.t) result
 end

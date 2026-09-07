@@ -53,7 +53,7 @@ the version probe and the two-pipe IO trap) is in `CURL.md`.
 | Forged quote / bogus cert chain | self-signed PCK | ECDSA chain verified to the pinned Intel SGX Root CA public key; QE binding hash checked; TCB Info + QE Identity checked against pinned Intel PCS collateral (CRL / live revocation documented out of scope) |
 | Response forgery | MITM after attestation | enclave-signed responses: signed payload must equal the received completion bytes + request_id; secp256k1 verify + keccak address must equal attested `signing_address` |
 | E2EE downgrade | plaintext send to a TEE slug | `Session.t` has no plaintext send; encryption is the only path that typechecks |
-| AES-GCM nonce reuse | catastrophic key recovery | M30 adds single-use GCM nonce handles distinct from M29's attestation challenges; model spec P3 |
+| AES-GCM nonce reuse | catastrophic key recovery | M30 consumes distinct GCM nonce handles atomically and reserves nonce bytes in a shared per-session registry, including failed attempts; duplicate handles with equal bytes reject, reservations cap at 65,536; separate sessions still depend on independent OS-generated scalars; model spec P3 |
 | Illegal request | 400s discovered in prod | capability phantom row + constraint-bounded sampling newtypes + context budget check |
 | Rate/balance surprise | silent 429 loops | typed rate-limit sextet, `Tier` variant (Explorer / Paid), typed 429 with reset times, Diem/USD decimal balances |
 | Deprecation surprise | slug dies under you | `model_spec.deprecation` parsed to a variant and surfaced |
@@ -117,6 +117,12 @@ module Tee : sig
     ('l Attested.t, Error.t) result
 end
 
+module Gcm_fresh : sig
+  type t
+  val make : entropy:Entropy.t -> (t, Error.t) result
+end
+module Ciphertext : sig type t val to_hex : t -> string end
+
 module Session : sig
   type 'c t                                (* carries the model's base row *)
   module Cpu_only : sig
@@ -129,7 +135,10 @@ module Session : sig
     model:('c * Model.e2ee) Model.t -> ('c t, Error.t) result
   val client_pubkey_hex : 'c t -> string
   val model_pubkey_hex : 'c t -> string
-  (* M30 adds encrypted send. *)
+  val encrypt : fresh:Gcm_fresh.t -> 'c t -> string ->
+    (Ciphertext.t, Error.t) result
+  val request : entropy:Entropy.t -> 'c t -> 'c Chat.t ->
+    (Httpx.Request.t, Error.t) result
 end
 
 module Api_key : sig
@@ -421,7 +430,7 @@ plus a full-edge differential sweep (x402-caml conformance pattern).
 | M28 | attestx: the internal pure pipeline composes quote parsing, PCK chain validation, QE and ISV signatures, TCB grading, REPORTDATA binding, measurement policy and the GPU structural check into an abstract full/structural Attested.t;  it preserves the expectation level and passes lower-unit errors through;  the fourteen envelope/GPU errors use Attest_invalid;  required strings precede the nonce echo, quote decoding, signing-key/address check, chain, signatures, TCB, policy and GPU checks in that order;  base64 is tried before hex and a version-4 candidate is parsed once;  the nvidia_payload string or object requires nonce and arch strings, a matching nonce and a nonempty evidence_list, while arch and evidence contents are carried without NRAS authentication;  missing GPU evidence is accepted at both levels and an explicit JSON null nvidia_payload counts as absence, as the harness oracle reads it, while every other non-string non-object shape is rejected;  non-Revoked TCB grades and the untrusted verified flag are carried, not elevated to trust;  now_of_unix converts bounded whole Unix seconds without reading a clock;  the synthetic envelope proves rejection depth and order, not a successful Venice attestation, since the real quote carries Phala's signed binding;  live capture, public Tee integration, session admission, nonce consumption, CRLs and NRAS verification remain outside this milestone |
 | **F: E2EE session** | |
 | M29 | sessx/sessionx establish: public Tee, OS Entropy and atomic Fresh boundary; consumes a challenge before every admission attempt, including failures and aliases across domains; requires full Attested.t, an e2ee model witness and an explicit CPU-only deployment policy tied to the signed measurement set; revalidates original certificates and collateral at explicit current time, checks model metadata equality, requires both TCB grades UpToDate and rejects present unauthenticated GPU evidence; rejection-samples a secp256k1 scalar with a 128-attempt cap, derives its public key through the existing 256-step ladder and uses the attested signing key for ECDH; HKDF-SHA256 takes the 32-byte shared x, empty salt and ecdsa_encryption info to mint an opaque AES key; no secret projections are public; known-answer tests and an independent Python oracle compare actual executable output; compile-fail controls enforce full/e2ee/Fresh/CPU policy boundaries; no live accepting Venice fixture, CRL verification, GPU authentication, encrypted send or secret zeroization is claimed |
-| M30 | encrypt path: GCM seal, Ciphertext.t hex, E2EE header assembly; no plaintext send exists + tests |
+| M30 | encryptx/sessionx request encryption: opaque Ciphertext.t frames carry SEC1 public key, nonce, ciphertext and final GCM tag in lowercase hex with empty AAD; distinct Gcm_fresh handles burn atomically before encryption and session aliases share a nonce-byte registry capped at 65,536 reservations, including failures; the entire typed chat is checked before entropy, with exact expanded JSON size preflight; only bare-string user/system contents without metadata are accepted, unsupported roles/media/tools/prompt-bearing options/search reject; streaming and E2EE are forced on, web search/scraping/X search off, and the three headers come from the established session; Session.request returns only a fully encrypted immutable HTTP request, with no partial or fallback plaintext result; four executable frame KATs are checked by independent PyCryptodome, host tests cover aliases, races, duplicate nonce bytes, cap and failure consumption, and compile-fail controls guard public types; live acceptance remains M31 and response decryption M32 |
 | M31 | live probe III: real E2EE roundtrip capture to fixtures/ (redacted); pin response chunk layout (tag vs ct order) AND the /tee/signature signed-message formula in FACTS;  confirm W11, the `/tee/signature` signed text `sha256(request_body).hex() + ":" + sha256(response).hex()` signed EIP-191 personal_sign on the ECDSA path and raw Ed25519 as bare hex on the ED25519 path, and W13, the tag-LAST chunk layout `65-byte ephemeral pubkey || 12-byte GCM nonce || ciphertext || 16-byte tag`, which SUPERSEDES the tag-first reading FACTS.md used to carry |
 | M32 | decrypt path: chunk machine (layout per the M31 pin; 93-byte floor), streaming decrypt composed with ssex + effects + tests |
 | M33 | response signature: /tee/signature parse; signed payload must equal the received completion bytes + request_id (formula per M31 pin); secp verify + keccak address vs signing_address; cross-request rejection KAT + tests |
@@ -518,6 +527,13 @@ before it requires it inside a check row.
 From M28 group (k) re-encodes the synthetic envelope quote member, checks
 the echo, signing address and GPU payload, and requires the derived
 digests and values inside executable suite rows.
+From M30 `diff_encrypt.py` compares four complete executable request frames
+with independent PyCryptodome AES-GCM after checking a published known answer.
+Its negative controls reject changed frame components, plaintext, row sets
+and tag placement. Production host-source tests cover one-use handles,
+duplicate nonce bytes, concurrent reservation and the session budget, including
+failures. The complete chat and expanded body length are checked before the
+first encryption draw. Validation details are recorded in `validation/m30.md`.
 A probe milestone lands no OCaml unit, so it has
 no behavioral mutant:  M22 satisfies MUTATION-CONFIRMED with the teeth
 of its brief, each of which makes the gate RED on a scratch copy and

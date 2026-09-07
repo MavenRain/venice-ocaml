@@ -7,6 +7,11 @@ module Entropyx = Venice__Entropyx
 module Policyx = Venice__Policyx
 module Derx = Venice__Derx
 module Secpx = Venice__Secpx
+module Gcmx = Venice__Gcmx
+module Hexx = Venice__Hexx
+module Chatx = Venice__Chatx
+module Httpx = Venice__Httpx
+module Encryptx = Venice__Encryptx
 
 module Modelx = struct
   type e2ee = |
@@ -27,7 +32,7 @@ end
 module Sessx = struct
   module Cpu_only = struct type t = unit end
   type 'c admission = Policyx.Expect.full Attestx.Attested.t
-  type 'c t = string
+  type 'c t = { scalar_hex : string; cipher_key : Gcmx.Key.t }
   let admissions : int Atomic.t = Atomic.make 0
   let derivations : int Atomic.t = Atomic.make 0
   (* The instant the orchestrator forwarded on the last admission. *)
@@ -48,9 +53,14 @@ module Sessx = struct
     Atomic.incr derivations;
     Result.fold ~ok:(fun (e : Errx.t) -> Error e)
       ~error:(fun (() : unit) ->
-        Ok (Venice.Hex.encode (Secpx.Scalar.to_bytes scalar)))
+        let bytes = Secpx.Scalar.to_bytes scalar in
+        Result.map (fun cipher_key ->
+          { scalar_hex = Venice.Hex.encode bytes; cipher_key })
+          (Option.to_result ~none:(Errx.Session_invalid "test key")
+            (Gcmx.Key.of_bytes bytes)))
       (Option.to_result ~none:() a.derivation_error)
-  let client_pubkey_hex (t : 'c t) : string = t
-  let model_pubkey_hex (t : 'c t) : string = t
-  let model_id (t : 'c t) : string = t
+  let client_pubkey_hex (t : 'c t) : string = t.scalar_hex
+  let model_pubkey_hex (t : 'c t) : string = t.scalar_hex
+  let model_id (t : 'c t) : string = t.scalar_hex
+  let key (t : 'c t) : Gcmx.Key.t = t.cipher_key
 end

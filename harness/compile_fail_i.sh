@@ -144,3 +144,47 @@ cat > "$cfdir/cf_x_cpu_policy.ml" <<'CF_X'
 let inferred : Venice.Session.Cpu_only.t = ()
 CF_X
 expect_fail cf_x_cpu_policy.ml "Venice.Session.Cpu_only.t" "unit"
+
+# M30: both request construction and explicit encryption typecheck using
+# the public boundary. Challenge and encryption handles remain distinct.
+cat > "$cfdir/cf_y_encrypt_control.ml" <<'CF_Y'
+let encrypt ~fresh (session : 'c Venice.Session.t) =
+  Venice.Session.encrypt ~fresh session "hello"
+let request ~entropy (session : 'c Venice.Session.t) (chat : 'c Venice.Chat.t) =
+  Venice.Session.request ~entropy session chat
+let inspect (ciphertext : Venice.Ciphertext.t) = Venice.Ciphertext.to_hex ciphertext
+CF_Y
+(cd "$cfdir" && ocamlc -c -color never -I "$cfinc" cf_y_encrypt_control.ml)
+echo "compile_fail: encryption control ok"
+
+cat > "$cfdir/cf_y_nonce_kind.ml" <<'CF_Y'
+let reject (fresh : Venice.Fresh.t) session =
+  Venice.Session.encrypt ~fresh session "hello"
+CF_Y
+expect_fail cf_y_nonce_kind.ml "Venice.Fresh.t" "Venice.Gcm_fresh.t"
+
+cat > "$cfdir/cf_z_nonce_forge.ml" <<'CF_Z'
+let forged : Venice.Gcm_fresh.t = ()
+CF_Z
+expect_fail cf_z_nonce_forge.ml "Venice.Gcm_fresh.t" "unit"
+
+cat > "$cfdir/cf_aa_ciphertext_forge.ml" <<'CF_AA'
+let forged : Venice.Ciphertext.t = "plaintext"
+CF_AA
+expect_fail cf_aa_ciphertext_forge.ml "Venice.Ciphertext.t" "string"
+
+cat > "$cfdir/cf_ab_session_forge.ml" <<'CF_AB'
+let reject ~entropy chat = Venice.Session.request ~entropy () chat
+CF_AB
+expect_fail cf_ab_session_forge.ml "Venice.Session.t" "unit"
+
+cat > "$cfdir/cf_ac_request_brand.ml" <<'CF_AC'
+let reject ~entropy (session : unit Venice.Session.t) (chat : bool Venice.Chat.t) =
+  Venice.Session.request ~entropy session chat
+CF_AC
+expect_fail cf_ac_request_brand.ml "Venice.Chat.t" "bool" "unit"
+
+cat > "$cfdir/cf_ad_nonce_bytes.ml" <<'CF_AD'
+let forge = Venice.Gcm_fresh.of_bytes "012345678901"
+CF_AD
+expect_fail cf_ad_nonce_bytes.ml "Unbound value" "Venice.Gcm_fresh.of_bytes"

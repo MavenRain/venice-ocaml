@@ -9,6 +9,8 @@
 module Errx = Venice__Errx
 module Secpx = Venice__Secpx
 module Policyx = Venice__Policyx
+module Bytesx = Venice__Bytesx
+module Gcmx = Venice__Gcmx
 module Real_unix = Unix
 
 type event =
