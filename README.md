@@ -81,16 +81,33 @@ Client-side TDX attestation and E2EE are under development. The repository
 contains internal cryptographic primitives, a TDX v4 quote parser, measurement
 and REPORTDATA policy checks, quote signature verification, PCK certificate
 validation against a pinned Intel root, and signed TCB and QE identity checks.
-The internal attestation pipeline composes these checks while preserving the
-full or structural expectation level.  These modules are not yet a public
-attestation API.
+The public `Tee` API composes these checks while preserving the full or
+structural expectation level. Supply trusted measurements, a current instant,
+collateral and response bytes. It performs no network request itself.
+
+`Fresh.make` draws a challenge from `Entropy.system ()`. Pass `Fresh.nonce`
+to `Tee.verify`, then pass the same handle to `Session.establish`. Establishment
+consumes the handle on its first attempt, including failures and concurrent
+aliases. It requires a full attestation and an E2EE model capability, rechecks
+certificate and collateral validity at the supplied time, requires both TCB
+grades to be `UpToDate`, and rejects present GPU evidence. It also requires
+`Session.Cpu_only.trust ~measurements`: an explicit caller assertion that the
+trusted measurement set confines inference to the CPU TEE. The SDK checks those
+measurements against the signed quote. Missing unsigned GPU metadata cannot
+establish this deployment property. Matching model
+metadata provides routing consistency; the signed measurements and signing
+key provide identity. Repeated quote verification is allowed, but session
+admission consumes each handle once.
 
 The synthetic response fixture demonstrates rejection paths, not a successful
 Venice attestation.  Its real signed quote carries Phala's binding.  GPU payloads
 receive structural and nonce checks only;  NRAS authentication and CRL checks
-remain outside the pipeline.  Public attestation integration, encrypted session
-establishment, and encrypted streaming remain planned work.  The cryptographic
-implementation does not provide a blanket constant-time guarantee.
+remain outside the pipeline. Session establishment derives an ephemeral
+secp256k1 keypair and an opaque AES key through ECDH and HKDF-SHA256.
+Encrypted requests and streaming remain planned work. No successful live
+Venice session is covered by the current fixtures. The cryptographic
+implementation does not provide a blanket constant-time guarantee; secret
+zeroization remains planned hardening work.
 
 See the milestone roadmap and current limitations in [DESIGN.md](DESIGN.md).
 The package metadata describes the intended architecture; this README describes

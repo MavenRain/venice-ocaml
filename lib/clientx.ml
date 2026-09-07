@@ -133,7 +133,8 @@ let obstacle_of_error (e : Errx.t) : Retryx.Obstacle.t option =
   | Errx.Sig_invalid (_ : string) -> None
   | Errx.Cert_invalid (_ : string) -> None
   | Errx.Tcb_invalid (_ : string)
-  | Errx.Attest_invalid (_ : string) -> None
+  | Errx.Attest_invalid (_ : string)
+  | Errx.Session_invalid (_ : string) -> None
 
 type stopper =
   | Http_stop of Headx.failure

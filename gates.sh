@@ -10,7 +10,7 @@ cd "$here"
 dunecho build
 
 # Test suites; grows one entry per milestone that lands a suite.
-suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx test_hmacx test_keccakx test_p256x test_secpx test_aesx test_gcmx test_quotex test_policyx test_sigx test_derx test_tcbx test_attestx"
+suites="test_codec test_bytes test_jsonx test_modelx test_paramsx test_msgx test_headx test_chatx test_respx test_ssex test_accx test_streamx test_transport test_curlx test_retryx test_clientx test_limbsx test_hmacx test_keccakx test_p256x test_secpx test_aesx test_gcmx test_quotex test_policyx test_sigx test_derx test_tcbx test_attestx test_entropyx test_sessx test_sessx_admit test_session_boundary test_entropy_io"
 # The capture sits in an if-condition so a failing suite cannot abort
 # the script (set -e) before its output and name reach the log; the
 # FAIL-text case still guards a suite that prints FAIL yet exits 0.
@@ -99,6 +99,11 @@ fi
 # disagreement.
 "$py" "$here/harness/diff_quote.py"
 "$py" "$here/harness/test_diff_quote.py"
+
+# M29 recomputes the ECDH/HKDF/GCM answers and compares the executable's
+# emitted bytes. Its negative controls must reject changed transcripts.
+"$py" -I "$here/harness/diff_session.py"
+"$py" -I "$here/harness/test_diff_session.py"
 
 # Model check + correspondence (M35..M37).
 if [ -x "$here/model/check.sh" ]; then
@@ -266,7 +271,9 @@ fi
 # omlz note at lines 107 to 110 above names quotex plus policy only,
 # so this ladder runs no omlz command for it.
 # M28 attestx composes the five witnesses with explicit time and collateral.
-core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml hmacx.ml keccakx.ml p256x.ml secpx.ml aesx.ml gcmx.ml quotex.ml policyx.ml sigx.ml derx.ml tcbx.ml attestx.ml"
+# M29 sessx is pure; entropyx and sessionx are host modules because
+# entropyx owns Unix randomness and atomic Fresh consumption.
+core="errx.ml bytesx.ml hexx.ml b64x.ml jsonx.ml paramsx.ml modelx.ml msgx.ml headx.ml chatx.ml respx.ml ssex.ml accx.ml keyx.ml httpx.ml cfgx.ml wirex.ml retryx.ml limbsx.ml hmacx.ml keccakx.ml p256x.ml secpx.ml aesx.ml gcmx.ml quotex.ml policyx.ml sigx.ml derx.ml tcbx.ml attestx.ml sessx.ml"
 if [ -n "$core" ]; then
   # The list is echoed so the gate LOG proves which modules zxlint
   # covered; zxlint itself prints only a verdict.

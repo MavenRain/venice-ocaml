@@ -20,7 +20,8 @@
    network, clock, entropy or nonce consumption occurs here. M29 owns
    session admission and nonce consumption. The synthetic fixture has
    no accepting end-to-end case: its signed binding belongs to Phala.
-   Public re-export through Venice.Tee remains a later integration. *)
+   M29 exports the pipeline through Venice.Tee and implements the host
+   Fresh/session boundary separately. *)
 
 module Envelope : sig
   type t
@@ -65,6 +66,14 @@ val check_gpu : nonce:Policyx.Nonce.t -> Jsonx.t option -> (Gpu.t, Errx.t) resul
    no leap seconds. None outside the supported four-digit year range. *)
 val now_of_unix : seconds:int -> Derx.Now.t option
 
+(* Recheck a quote and the supplied original collateral at an explicit
+   instant. The signature witness is re-minted from the same quote, so
+   the QE report and the signed 632-byte region are re-bound here and no
+   foreign witness can be paired with these bytes. No Attested witness is
+   minted here; REPORTDATA and measurements remain separate. *)
+val revalidate_evidence : now:Derx.Now.t -> collateral:Tcbx.Collateral.t ->
+  quote:Quotex.t -> (unit, Errx.t) result
+
 module Attested : sig
   type 'level t
   val quote : 'l t -> Quotex.t
@@ -79,6 +88,9 @@ module Attested : sig
   val model : 'l t -> string option
   val tee_provider : 'l t -> string option
   val verified_flag : 'l t -> bool option
+  (* Recheck the original PCK chain and signed collateral at a new
+     caller-supplied instant. Lower-unit errors pass through. *)
+  val revalidate : now:Derx.Now.t -> 'l t -> (unit, Errx.t) result
 end
 
 val verify : now:Derx.Now.t -> expect:'l Policyx.Expect.t ->

@@ -76,7 +76,81 @@ let full_verify (expect : P.Expect.full P.Expect.t) ~(now : D.Now.t)
     (P.Expect.full A.Attested.t, E.t) result =
   A.verify ~now ~expect ~nonce ~collateral ~response
 
+(* The real fixture's signature is established at the original valid
+   instant. Revalidation then receives a different time and the same
+   proof, exactly the lifetime issue the M29 session boundary addresses.
+   No Attested witness is constructed for the foreign REPORTDATA. *)
+let evidence_quote : (Q.t, E.t) result = Q.parse v4
+
+let revalidate_with ~(digits : string) ~(collateral : (T.Collateral.t, E.t) result)
+    ~(quote : (Q.t, E.t) result) : (unit, E.t) result =
+  Result.bind quote (fun quote ->
+    Result.bind collateral (fun collateral ->
+      Option.fold ~none:(Error (E.Attest_invalid "test time"))
+        ~some:(fun now -> A.revalidate_evidence ~now ~collateral ~quote)
+        (D.Now.of_digits digits)))
+
+let patched_evidence_quote (offset : int) : (Q.t, E.t) result =
+  (* XOR guarantees different bytes while preserving the quote shape. *)
+  Option.fold ~none:(Error (E.Attest_invalid "test quote byte"))
+    ~some:(fun byte ->
+      Q.parse (patch v4 offset (Venice__Bytesx.of_codes [byte lxor 1])))
+    (Venice.Cursor.u8 v4 offset)
+
+(* Byte 770 starts the 384-byte QE report the PCK key signs. *)
+let mismatched_evidence_quote : (Q.t, E.t) result = patched_evidence_quote 770
+
+(* Byte 48 starts the TD report body, which sits inside the 632-byte
+   signed region at 0 that the attestation key signs. *)
+let repainted_body_quote : (Q.t, E.t) result = patched_evidence_quote 48
+
+let faulty_qe_collateral : (T.Collateral.t, E.t) result =
+  Result.map (fun c ->
+    T.Collateral.make ~tcb_info:(T.Collateral.tcb_info c)
+      ~tcb_info_signature:(T.Collateral.tcb_info_signature c)
+      ~tcb_info_chain:(T.Collateral.tcb_info_chain c)
+      ~qe_identity:(T.Collateral.qe_identity c)
+      ~qe_identity_signature:(String.make 128 '0')
+      ~qe_identity_chain:(T.Collateral.qe_identity_chain c)) collateral
+
 let () = run [
+  ("attestx: (m) real signed evidence revalidates at the pinned instant",
+   Result.is_ok (revalidate_with ~digits:"20250620103227" ~collateral
+     ~quote:evidence_quote));
+  ("attestx: (m) revalidation rejects a now after PCK certificate expiry",
+   error "cert: expired" (revalidate_with ~digits:"20330101000000" ~collateral
+     ~quote:evidence_quote));
+  ("attestx: (m) revalidation rejects a now before PCK certificate validity",
+   error "cert: not yet valid" (revalidate_with ~digits:"20200101000000" ~collateral
+     ~quote:evidence_quote));
+  ("attestx: (m) revalidation still accepts the last second of collateral validity",
+   Result.is_ok (revalidate_with ~digits:"20250719101602" ~collateral
+     ~quote:evidence_quote));
+  ("attestx: (m) revalidation rejects the exact collateral expiry instant",
+   error "tcb: tcb info expired"
+     (revalidate_with ~digits:"20250719101603" ~collateral ~quote:evidence_quote));
+  ("attestx: (m) revalidation rejects a now before TCB Info issuance",
+   error "tcb: tcb info not yet valid"
+     (revalidate_with ~digits:"20250619101602" ~collateral ~quote:evidence_quote));
+  ("attestx: (m) revalidation rejects a now before QE Identity issuance",
+   error "tcb: qe identity not yet valid"
+     (revalidate_with ~digits:"20250619103226" ~collateral ~quote:evidence_quote));
+  ("attestx: (m) revalidation checks the original TCB Info signature",
+   error "tcb: tcb info signature"
+     (revalidate_with ~digits:"20250620103227" ~collateral:faulty_collateral
+       ~quote:evidence_quote));
+  ("attestx: (m) revalidation checks the original QE Identity signature",
+   error "tcb: qe identity signature"
+     (revalidate_with ~digits:"20250620103227" ~collateral:faulty_qe_collateral
+       ~quote:evidence_quote));
+  ("attestx: (m) revalidation refuses a different quote QE report",
+   error "sig: qe signature mismatch"
+     (revalidate_with ~digits:"20250620103227" ~collateral
+       ~quote:mismatched_evidence_quote));
+  ("attestx: (m) revalidation re-binds the signed body to the ISV signature",
+   error "sig: isv signature mismatch"
+     (revalidate_with ~digits:"20250620103227" ~collateral
+       ~quote:repainted_body_quote));
   ("attestx: (j) full expectation still requires the binding",
    with_nonce (fun nonce -> good (fun quote ->
      Option.fold ~none:false ~some:(fun now -> good (fun collateral ->

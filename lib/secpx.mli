@@ -123,8 +123,8 @@ val verify : Pubkey.t -> Signature.t -> digest:string -> bool
 (* d Q in affine, through the same fixed-shape ladder verify runs, and
    re-validated as a public key. None only at the point at infinity,
    which is unreachable for a validated Q: the group has prime order
-   and cofactor 1. Exposed beside shared_x because the KDF input is
-   unpinned until the M22 and M31 probes. *)
+   and cofactor 1. M29 pins shared_x as the KDF input from the consumer
+   and official guide; the full point remains available for diagnostics. *)
 val shared_point : Scalar.t -> Pubkey.t -> Pubkey.t option
 
 (* The 32-byte big-endian x of d Q, the SEC 1 section 3.3.1 shared

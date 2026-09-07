@@ -17,6 +17,41 @@ module Repetition_penalty = Paramsx.Repetition_penalty
 module Top_k = Paramsx.Top_k
 module Venice_params = Paramsx.Venice_params
 module Model = Modelx
+
+module Entropy = struct
+  type t = Entropyx.t
+  let system = Entropyx.system
+end
+
+module Tee = struct
+  module Nonce = Policyx.Nonce
+  module Measurements = Policyx.Measurements
+  module Expect = Policyx.Expect
+  module Collateral = Tcbx.Collateral
+  module Status = Tcbx.Status
+  module Now = struct
+    include Derx.Now
+    let of_unix = Attestx.now_of_unix
+  end
+  module Attested = struct
+    include Attestx.Attested
+    let signing_key_hex (t : 'l t) : string =
+      Hexx.encode (Secpx.Pubkey.to_sec1 (signing_key t))
+    let signing_address_hex (t : 'l t) : string =
+      Keccakx.Address.to_hex (signing_address t)
+    let platform_status (t : 'l t) : Status.t = Tcbx.platform_status (tcb t)
+    let qe_status (t : 'l t) : Status.t = Tcbx.qe_status (tcb t)
+    let has_gpu_evidence (t : 'l t) : bool =
+      match gpu t with
+      | Attestx.Gpu.Absent -> false
+      | Attestx.Gpu.Present (_ : Attestx.Gpu.Payload.t) -> true
+  end
+  let verify = Attestx.verify
+end
+
+module Fresh = Entropyx.Fresh
+module Session = Sessionx
+
 module Audio_format = Msgx.Audio_format
 module Cache = Msgx.Cache
 module Reasoning_detail = Msgx.Reasoning_detail

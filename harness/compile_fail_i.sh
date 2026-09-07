@@ -89,3 +89,58 @@ module P = Venice__Policyx
 let promote (w : P.Expect.structural A.Attested.t) : P.Expect.full A.Attested.t = w
 CF_Q
 expect_fail cf_q_attest_level.ml "P.Expect.structural" "P.Expect.full" "not compatible"
+
+# M29 public surface: the fully witnessed call compiles first.
+cat > "$cfdir/cf_r_session_control.ml" <<'CF_R'
+let establish ~entropy ~fresh ~cpu_only ~now
+    (attested : Venice.Tee.Expect.full Venice.Tee.Attested.t)
+    (model : ('c * Venice.Model.e2ee) Venice.Model.t) =
+  Venice.Session.establish ~entropy ~fresh ~cpu_only ~now ~attested ~model
+let prepare ~entropy ~measurements ~now ~collateral ~response =
+  Result.bind (Venice.Fresh.make ~entropy) (fun fresh ->
+    let nonce = Venice.Fresh.nonce fresh in
+    let expect = Venice.Tee.Expect.make ~measurements in
+    Result.map (fun attested -> (fresh, attested))
+      (Venice.Tee.verify ~now ~expect ~nonce ~collateral ~response))
+CF_R
+(cd "$cfdir" && ocamlc -c -color never -I "$cfinc" cf_r_session_control.ml)
+echo "compile_fail: session control ok"
+
+cat > "$cfdir/cf_r_session_structural.ml" <<'CF_R'
+let reject ~entropy ~fresh ~cpu_only ~now ~model
+    (attested : Venice.Tee.Expect.structural Venice.Tee.Attested.t) =
+  Venice.Session.establish ~entropy ~fresh ~cpu_only ~now ~attested ~model
+CF_R
+expect_fail cf_r_session_structural.ml "Venice.Tee.Expect.structural" "Venice.Tee.Expect.full"
+
+cat > "$cfdir/cf_s_session_capability.ml" <<'CF_S'
+let reject ~entropy ~fresh ~cpu_only ~now ~attested
+    (model : unit Venice.Model.t) =
+  Venice.Session.establish ~entropy ~fresh ~cpu_only ~now ~attested ~model
+CF_S
+expect_fail cf_s_session_capability.ml "Venice.Model.e2ee" "unit"
+
+cat > "$cfdir/cf_t_fresh_abstract.ml" <<'CF_T'
+let forged : Venice.Fresh.t = ()
+CF_T
+expect_fail cf_t_fresh_abstract.ml "Venice.Fresh.t" "unit"
+
+cat > "$cfdir/cf_u_session_secret.ml" <<'CF_U'
+let leak (session : 'c Venice.Session.t) = Venice.Session.scalar session
+CF_U
+expect_fail cf_u_session_secret.ml "Unbound value" "Venice.Session.scalar"
+
+cat > "$cfdir/cf_v_session_key.ml" <<'CF_V'
+let leak (session : 'c Venice.Session.t) = Venice.Session.key session
+CF_V
+expect_fail cf_v_session_key.ml "Unbound value" "Venice.Session.key"
+
+cat > "$cfdir/cf_w_entropy_script.ml" <<'CF_W'
+let weak = Venice.Entropy.Fake.make []
+CF_W
+expect_fail cf_w_entropy_script.ml "Unbound module" "Venice.Entropy.Fake"
+
+cat > "$cfdir/cf_x_cpu_policy.ml" <<'CF_X'
+let inferred : Venice.Session.Cpu_only.t = ()
+CF_X
+expect_fail cf_x_cpu_policy.ml "Venice.Session.Cpu_only.t" "unit"

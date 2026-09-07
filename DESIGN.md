@@ -26,8 +26,8 @@ Two layers, one repo:
 - **Core (ZxCaml subset, pure, sans-io).** Codecs, domain model, SSE state
   machine, the whole crypto tower, the TDX quote verifier, and the E2EE
   session state machine. No IO, no effects, no exceptions, no wall clock,
-  no randomness: time enters as a `~now` witness, entropy enters as
-  consumed `Fresh.t` values minted at the host boundary. Every core
+  no randomness: time enters as a `~now` witness, and entropy enters as
+  validated scalars sampled at the host boundary after Fresh consumption. Every core
   module passes `zxlint` and `omlz check`; the flagship artifact (M40)
   compiles the quote parser + policy core with `omlz build --target=bpf`.
 - **Host (plain OCaml 5).** The curl-subprocess transport (`curlx`) and
@@ -53,7 +53,7 @@ the version probe and the two-pipe IO trap) is in `CURL.md`.
 | Forged quote / bogus cert chain | self-signed PCK | ECDSA chain verified to the pinned Intel SGX Root CA public key; QE binding hash checked; TCB Info + QE Identity checked against pinned Intel PCS collateral (CRL / live revocation documented out of scope) |
 | Response forgery | MITM after attestation | enclave-signed responses: signed payload must equal the received completion bytes + request_id; secp256k1 verify + keccak address must equal attested `signing_address` |
 | E2EE downgrade | plaintext send to a TEE slug | `Session.t` has no plaintext send; encryption is the only path that typechecks |
-| AES-GCM nonce reuse | catastrophic key recovery | GCM nonces are generative single-use `Fresh.t`; model spec P3 |
+| AES-GCM nonce reuse | catastrophic key recovery | M30 adds single-use GCM nonce handles distinct from M29's attestation challenges; model spec P3 |
 | Illegal request | 400s discovered in prod | capability phantom row + constraint-bounded sampling newtypes + context budget check |
 | Rate/balance surprise | silent 429 loops | typed rate-limit sextet, `Tier` variant (Explorer / Paid), typed 429 with reset times, Diem/USD decimal balances |
 | Deprecation surprise | slug dies under you | `model_spec.deprecation` parsed to a variant and surfaced |
@@ -98,8 +98,8 @@ module Chat : sig
     (request, Error.t) result              (* Temp.t minted FROM the model's constraints *)
 end
 
-(* M28 implements this surface internally as Attestx. Public Tee
-   integration and entropy-backed nonce consumption follow at M29. *)
+(* M29 exports the attestation pipeline, OS entropy and consumed Fresh
+   handles. The complete public surface is in lib/venice.mli. *)
 module Tee : sig
   module Nonce = Policyx.Nonce
   module Measurements = Policyx.Measurements
@@ -119,11 +119,17 @@ end
 
 module Session : sig
   type 'c t                                (* carries the model's base row *)
+  module Cpu_only : sig
+    type t
+    val trust : measurements:Tee.Measurements.t -> t
+  end
   val establish :
-    entropy:Entropy.t -> attested:full Tee.Attested.t ->
+    entropy:Entropy.t -> fresh:Fresh.t -> cpu_only:Cpu_only.t ->
+    now:Derx.Now.t -> attested:Policyx.Expect.full Tee.Attested.t ->
     model:('c * Model.e2ee) Model.t -> ('c t, Error.t) result
-  val send : 'c t -> 'c Msg.nonempty -> (Chat.request * 'c t, Error.t) result
-    (* contents leave only as Ciphertext.t hex; no plaintext API exists *)
+  val client_pubkey_hex : 'c t -> string
+  val model_pubkey_hex : 'c t -> string
+  (* M30 adds encrypted send. *)
 end
 
 module Api_key : sig
@@ -336,7 +342,9 @@ positive and negative, with printed witnesses:
 
 - P1 safety: no plaintext user/system content reaches the transport in
   any state before `full Attested`.
-- P2 attestation nonces are single-use across every trace.
+- P2 each Fresh attestation challenge handle permits one session admission
+  attempt across every trace, including failure and concurrent aliases.
+  Quote verification may repeat; byte uniqueness relies on OS entropy.
 - P3 no (key, GCM nonce) pair is ever used twice.
 - P4 decrypt fires only after a completed handshake.
 - P5 taint is monotone: a failed check never later reads as verified.
@@ -412,7 +420,7 @@ plus a full-edge differential sweep (x402-caml conformance pattern).
 | M27 | tcbx: the TCB Info and QE Identity checks against the pinned Intel PCS collateral and the FIFTH attestation-tower module, where quotex DECODES the bytes, policyx DECIDES on the body, sigx PROVES the signature section, derx PROVES the PCK certificate chain and this unit GRADES the platform TCB and the quoting enclave;  it is pure and sans-io in the shape of the crypto tower, with no Bytes, no Buffer, no Array, no reference cell, no exception, no division line and no remainder, and it is an internal unit that `venice.mli` does not re-export beyond the `Tcb_invalid` constructor, because M28 composes it and the suite reaches it as `Venice__Tcbx`;  it reads the collateral envelope through jsonx, the two documents and their two issuer chains inside it, and the M25 and M26 witnesses, and it calls `Sha2` NEVER and `B64x` NEVER, because `P256x.verify_message` hashes every message itself and `Derx.Cert.of_pem` owns the base64 of the ONE block this unit parses;  ONE `layout` record built by `layout ()` carries every report offset, every JSON member name, every status word and every pinned string, and it is passed FIRST to every helper, so no helper reads a top-level constant under ZxCaml trap 2 and no numeric literal sits outside that record;  `verify ~now ~collateral ~chain ~quote ~sig_` runs ONE order and the reason names the FIRST failure:  0 the witness binding, where the derx pck key must equal the sigx pck key and the sigx qe report must equal the quote qe report (`witness mismatch`, RUL-M27-1), 1 the TCB Info issuer chain of exactly two blocks against the pinned root (`chain length`, `root pin`, `signing cert`, `signing cert signature`, `signing cert not yet valid`, `signing cert expired`), where block 2 is checked for PRESENCE only and the root's OWN signature is never verified, because `Derx.root_pin ()` is the anchor (RUL-M27-2), 2 the detached TCB Info signature, 3 the TCB Info id, version, tcb type, window, fmspc and pce id, 4 the top-level tdxModule when tee_tcb_svn byte 1 is 0, else ONLY the tdxModuleIdentity that byte selects, whose matched level says `revoked` or yields the module status (the OPTIONAL tdxModuleIdentities member may be absent), 5 the TCB level of the CPUSVN, the PCESVN and the tee_tcb_svn components, from component 2 when byte 1 is not 0 as Intel's `isTdxTcbHigherOrEqual` walks them, and the platform status is then CONVERGED with the module status as Intel's `convergeTcbStatus` does (a module OutOfDate lowers UpToDate or SWHardeningNeeded to OutOfDate and ConfigurationNeeded or ConfigurationAndSWHardeningNeeded to OutOfDateConfigurationNeeded), so `platform_status` reads the converged grade and `module_status` the module grade, 6 and 7 the QE issuer chain, the QE Identity document and its id, version and window, 8 the QE report against the identity, miscselect and attributes under their masks, mrsigner, isvprodid and isvsvn, and 9 the witness is minted;  every rejection is ONE `Errx.Tcb_invalid` from a CLOSED vocabulary of THIRTY-ONE words reachable from `verify` plus `envelope`, thirty-two in all, each printed under the `tcb: ` prefix, and a derx rejection passes THROUGH as its own `Cert_invalid` word, so this unit mints no synonym for a word derx already owns;  `P256x.verify_message` runs FOUR times per verify from TWO call sites, one signing certificate tbs leg per issuer chain and one detached document leg per document;  the two header u16 fields at offsets 8 and 10 stay RAW and feed NO TCB decision (D17), because dcap-qvl calls them `qe_svn` then `pce_svn` and go-tdx-guest calls the same two byte ranges `PceSvn` then `QeSvn`, the BYTE ranges agree and the LABELS are swapped, and no Intel header settles it, so M27 reads the QE ISVSVN from the QE report body and never from the quote header;  it consumes FOUR values from the M26 witness, `cpusvn`, `pcesvn`, `fmspc` and `pce_id`, and it reaches them through those TOTAL accessors and never through a second parse of the certificate bytes;  `test_tcbx` carries its checks in TWELVE groups, (a) the fixture and envelope identity, (b) the Status round trips, (c) `now_of_iso`, (d) the document windows and the detached signature verifies, (e) the signing chain and the root pin, (f) the TCB Info fields with synthetic documents, (g) the TCB level grading with synthetic levels, (h) the tdxModule and the tdxModuleIdentities, (i) the QE identity fields and the painted report windows, (j) the isvsvn grading, (k) `verify` end to end with the step (0) rows and the order pairs, and (l) the thirty-two Errx words, and `diff_quote.py` group (j) recomputes every pin from the collateral bytes with its own affine P-256 before it requires it inside a check row;  the residuals are ELEVEN, (1) CRL and live revocation stay out of scope and the three CRL members of the envelope are read by nobody, (2) the pinned collateral EXPIRES, so the suite pins `now` = `20250620103227` inside every window and reads no clock and a live M28 run refreshes the pin through the collateral refresh procedure below, (3) `tcbEvaluationDataNumber` equality ACROSS the two documents is not enforced and the witness carries the TCB Info value only, (4) an SGX-flavour TCB Info and an SGX QE identity reject at the id check and are not parsed, (5) advisoryIDs are CARRIED in the witness and never decided on, (6) the acceptance policy over the non-Revoked grades is M28 and M29, so a grade below UpToDate is a witness value here and not a rejection, (7) the two swapped header u16 fields stay UNREAD, (8) `update=early` collateral is not modeled, (9) no omlz codegen is owed, because the omlz note in `gates.sh` names quotex and policy only, (10) the TDX module identity path runs only as far as the fixture allows, so group (h) carries SYNTHETIC rows for the tee_tcb_svn byte 1 = 3 branch and for the byte 1 = 0 branch that takes no identity at all, and (11) ECDSA signature malleability is NOT rejected, because the s twin n-s verifies on both documents, which is a property of ECDSA and not of this collateral |
 | M28 | attestx: the internal pure pipeline composes quote parsing, PCK chain validation, QE and ISV signatures, TCB grading, REPORTDATA binding, measurement policy and the GPU structural check into an abstract full/structural Attested.t;  it preserves the expectation level and passes lower-unit errors through;  the fourteen envelope/GPU errors use Attest_invalid;  required strings precede the nonce echo, quote decoding, signing-key/address check, chain, signatures, TCB, policy and GPU checks in that order;  base64 is tried before hex and a version-4 candidate is parsed once;  the nvidia_payload string or object requires nonce and arch strings, a matching nonce and a nonempty evidence_list, while arch and evidence contents are carried without NRAS authentication;  missing GPU evidence is accepted at both levels and an explicit JSON null nvidia_payload counts as absence, as the harness oracle reads it, while every other non-string non-object shape is rejected;  non-Revoked TCB grades and the untrusted verified flag are carried, not elevated to trust;  now_of_unix converts bounded whole Unix seconds without reading a clock;  the synthetic envelope proves rejection depth and order, not a successful Venice attestation, since the real quote carries Phala's signed binding;  live capture, public Tee integration, session admission, nonce consumption, CRLs and NRAS verification remain outside this milestone |
 | **F: E2EE session** | |
-| M29 | sessx establish: Entropy/Fresh boundary, ephemeral secp keygen, ECDH + HKDF vs model pubkey; requires full Attested.t + e2ee witness; KATs |
+| M29 | sessx/sessionx establish: public Tee, OS Entropy and atomic Fresh boundary; consumes a challenge before every admission attempt, including failures and aliases across domains; requires full Attested.t, an e2ee model witness and an explicit CPU-only deployment policy tied to the signed measurement set; revalidates original certificates and collateral at explicit current time, checks model metadata equality, requires both TCB grades UpToDate and rejects present unauthenticated GPU evidence; rejection-samples a secp256k1 scalar with a 128-attempt cap, derives its public key through the existing 256-step ladder and uses the attested signing key for ECDH; HKDF-SHA256 takes the 32-byte shared x, empty salt and ecdsa_encryption info to mint an opaque AES key; no secret projections are public; known-answer tests and an independent Python oracle compare actual executable output; compile-fail controls enforce full/e2ee/Fresh/CPU policy boundaries; no live accepting Venice fixture, CRL verification, GPU authentication, encrypted send or secret zeroization is claimed |
 | M30 | encrypt path: GCM seal, Ciphertext.t hex, E2EE header assembly; no plaintext send exists + tests |
 | M31 | live probe III: real E2EE roundtrip capture to fixtures/ (redacted); pin response chunk layout (tag vs ct order) AND the /tee/signature signed-message formula in FACTS;  confirm W11, the `/tee/signature` signed text `sha256(request_body).hex() + ":" + sha256(response).hex()` signed EIP-191 personal_sign on the ECDSA path and raw Ed25519 as bare hex on the ED25519 path, and W13, the tag-LAST chunk layout `65-byte ephemeral pubkey || 12-byte GCM nonce || ciphertext || 16-byte tag`, which SUPERSEDES the tag-first reading FACTS.md used to carry |
 | M32 | decrypt path: chunk machine (layout per the M31 pin; 93-byte floor), streaming decrypt composed with ssex + effects + tests |
@@ -440,6 +448,29 @@ signatures, so a refresh also re-pins group (a) of `test_tcbx` and
 group (j) of `harness/diff_quote.py`.
 
 ## 8. Gates
+
+M29 admission policy. The caller explicitly trusts a CPU-only deployment's
+measurement set through `Session.Cpu_only.trust`. The session compares that
+set with the signed, fully verified measurements. Missing or null GPU metadata
+is unsigned and cannot establish that a deployment avoids a GPU; deleting it
+does not mint a CPU-only policy. The SDK does not determine deployment semantics
+from measurements. Model metadata is likewise unsigned routing context. The
+caller supplies a trusted current instant and independently trusted measurements.
+
+The entropy/Fresh and session orchestration units are host code. The pure
+sessx key schedule joins zxlint. A Fresh handle is atomically consumed before
+nonce comparison, certificate/collateral revalidation, policy or entropy, so
+every failed attempt stays consumed. Repeated verification alone is allowed.
+Two independently minted handles rely on OS randomness for distinct bytes.
+The old limb arithmetic and the ladder's infinity branch remain variable-time.
+The session retains its scalar for M32 response derivation; M39 owns zeroization.
+
+The M29 gate adds entropy and domain-race tests, a copy of the actual host
+orchestrator compiled against admission test doubles, and key-schedule KATs
+checked against an affine Python/HMAC/PyCryptodome oracle. Those doubles test
+ordering and consumption only. They do not demonstrate a successful real
+attestation. The existing Phala fixture still cannot establish a Venice session.
+PyCryptodome is required by this developer oracle, not by the OCaml library.
 
 `./gates.sh`: dunecho build (0 warnings) + every suite + compile-fail
 harnesses + model check + correspondence + `zxlint --errors-only` +

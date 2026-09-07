@@ -62,6 +62,8 @@ type t =
   | Tcb_invalid of string
   (* M28: the envelope and GPU structural checks. *)
   | Attest_invalid of string
+  (* M29: entropy, freshness and session admission. *)
+  | Session_invalid of string
 
 let to_string (e : t) : string =
   match e with
@@ -89,3 +91,4 @@ let to_string (e : t) : string =
   | Cert_invalid s -> "cert: " ^ s
   | Tcb_invalid s -> "tcb: " ^ s
   | Attest_invalid s -> "attest: " ^ s
+  | Session_invalid s -> "session: " ^ s

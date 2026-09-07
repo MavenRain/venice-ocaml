@@ -32,6 +32,7 @@ module Error : sig
     | Cert_invalid of string
     | Tcb_invalid of string
     | Attest_invalid of string
+    | Session_invalid of string
 
   val to_string : t -> string
   (* M15: Transport_unreachable prints under "unreachable: " and means
@@ -49,7 +50,9 @@ module Error : sig
      the pinned Intel PCS collateral, the platform TCB level or the QE
      identity. M28: Attest_invalid prints under "attest: " and names the
      envelope or GPU structural check that refused the attestation
-     response. *)
+     response. M29: Session_invalid prints under "session: " and names
+     the entropy, freshness or session admission check that refused the
+     session. *)
 end
 
 module Cursor : sig
@@ -1703,4 +1706,108 @@ module Client : sig
        A Cut or a Failed outcome is a VALUE in the reply, not an
        error: the consumer already ran and the head was a 2xx. *)
   end
+end
+
+(* M29: caller-supplied quote/collateral bytes, explicit time and trusted
+   measurements. Verification performs no network request. CRLs and
+   NVIDIA NRAS authentication are not implemented. *)
+module Entropy : sig
+  type t
+  (* OS randomness from /dev/urandom. Failures are returned when used,
+     without exposing descriptor details or secret bytes. *)
+  val system : unit -> t
+end
+
+module Tee : sig
+  module Nonce : sig
+    type t
+    val to_hex : t -> string
+  end
+  module Now : sig
+    type t
+    val of_digits : string -> t option
+    val of_unix : seconds:int -> t option
+    val to_string : t -> string
+  end
+  module Measurements : sig
+    type t
+    val make : mr_td:string -> rt_mr0:string -> rt_mr1:string ->
+      rt_mr2:string -> rt_mr3:string -> t option
+    val mr_td : t -> string
+    val rt_mr0 : t -> string
+    val rt_mr1 : t -> string
+    val rt_mr2 : t -> string
+    val rt_mr3 : t -> string
+  end
+  module Expect : sig
+    type full
+    type structural
+    type 'level t
+    val make : measurements:Measurements.t -> full t
+    val tofu : unit -> structural t
+  end
+  module Collateral : sig
+    type t
+    val of_envelope : string -> (t, Error.t) result
+  end
+  module Status : sig
+    type t = Up_to_date | Sw_hardening_needed | Configuration_needed
+      | Configuration_and_sw_hardening_needed | Out_of_date
+      | Out_of_date_configuration_needed | Revoked
+    val to_string : t -> string
+    val equal : t -> t -> bool
+  end
+  module Attested : sig
+    type 'level t
+    val nonce : 'l t -> Nonce.t
+    val signing_key_hex : 'l t -> string
+    val signing_address_hex : 'l t -> string
+    val model : 'l t -> string option
+    val platform_status : 'l t -> Status.t
+    val qe_status : 'l t -> Status.t
+    (* Presence does not establish GPU authenticity. *)
+    val has_gpu_evidence : 'l t -> bool
+  end
+  val verify : now:Now.t -> expect:'l Expect.t -> nonce:Nonce.t ->
+    collateral:Collateral.t -> response:string ->
+    ('l Attested.t, Error.t) result
+end
+
+module Fresh : sig
+  type t
+  (* Mint a 32-byte challenge from OS entropy. The handle can be read
+     repeatedly for quote verification, but only one Session.establish
+     attempt can consume it, including through aliases or domains.
+     Uniqueness of bytes relies on OS entropy, not a global nonce set. *)
+  val make : entropy:Entropy.t -> (t, Error.t) result
+  val nonce : t -> Tee.Nonce.t
+end
+
+module Session : sig
+  type 'c t
+  module Cpu_only : sig
+    type t
+    (* Independently trusted deployment policy. The caller asserts that
+       these measurements confine inference to the CPU TEE. The SDK
+       cannot infer this from the absence of unsigned GPU metadata. *)
+    val trust : measurements:Tee.Measurements.t -> t
+  end
+  (* Consumes fresh first, including on failure. Requires its nonce to
+     match the attestation. Rechecks certificate and collateral validity
+     at now, then the CPU-only policy measurement set, then exact present
+     model metadata, both UpToDate grades and absent GPU evidence.
+     The model metadata is routing context, not a
+     signed slug. Measurements and the signing key supply identity.
+
+     Samples an ephemeral scalar with at most 128 rejection attempts;
+     derives HKDF-SHA256(x(ECDH), empty salt, "ecdsa_encryption", 32).
+     The caller supplies a current trusted instant. Scalar arithmetic
+     inherits Secpx's variable-time behavior. Encrypted send is M30. *)
+  val establish : entropy:Entropy.t -> fresh:Fresh.t ->
+    cpu_only:Cpu_only.t -> now:Tee.Now.t ->
+    attested:Tee.Expect.full Tee.Attested.t ->
+    model:('c * Model.e2ee) Model.t -> ('c t, Error.t) result
+  val client_pubkey_hex : 'c t -> string
+  val model_pubkey_hex : 'c t -> string
+  val model_id : 'c t -> string
 end

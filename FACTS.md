@@ -354,6 +354,23 @@ line below tagged `[live check pending]` closes the day it runs.
   function calling.  [docs]
 - Crypto: an ephemeral secp256k1 ECDH, then HKDF-SHA256, then
   AES-256-GCM.  [docs]
+- M29 key schedule: HKDF input is the 32-byte big-endian, zero-padded
+  x-coordinate of the ECDH shared point. Salt is empty, info is the
+  sixteen UTF-8 bytes `ecdsa_encryption`, and output is 32 bytes.
+  The attestation nonce is independent and never enters the KDF.
+  [consumer: elkimek/venice-e2ee at
+  59e5483eed99d1529d5ce3385171b4ba405ac182,
+  src/crypto.ts:29-58](https://github.com/elkimek/venice-e2ee/blob/59e5483eed99d1529d5ce3385171b4ba405ac182/src/crypto.ts#L29)
+  and [official guide, steps 4 and 6](https://docs.venice.ai/guides/features/tee-e2ee-models),
+  checked 2026-09-06. This is source corroboration; a live roundtrip
+  remains M31.
+- The same pinned consumer keeps a session keypair and prompt key,
+  and draws an independent 12-byte GCM nonce for each encryption.
+  The guide instead samples a new encryption keypair per message.
+  Both frames carry the actual encryption public key. M29 follows the
+  consumer; M30 owns nonce uniqueness per prompt key. Response frames
+  derive against their own server ephemeral key and the retained client
+  scalar, not the prompt key.
 - Request headers: `X-Venice-TEE-Client-Pub-Key`, the uncompressed hex
   of 130 characters with a leading `04`, `X-Venice-TEE-Model-Pub-Key`,
   which comes from the attestation, and

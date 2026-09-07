@@ -50,7 +50,8 @@ let detail (e : Errx.t) : string =
   | Errx.Req_invalid _ | Errx.Wire_invalid _ | Errx.Stream_invalid _
   | Errx.Transport_unreachable _ | Errx.Client_invalid _
   | Errx.Quote_invalid _ | Errx.Policy_rejected _ | Errx.Sig_invalid _
-  | Errx.Cert_invalid _ | Errx.Tcb_invalid _ | Errx.Attest_invalid _ ->
+  | Errx.Cert_invalid _ | Errx.Tcb_invalid _ | Errx.Attest_invalid _
+  | Errx.Session_invalid _ ->
     Errx.to_string e
 
 let transport (msg : string) : ('a, Errx.t) result =

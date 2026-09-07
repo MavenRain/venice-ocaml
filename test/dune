@@ -257,3 +257,55 @@
  (name test_attestx)
  (modules test_attestx fixture_attest_quote fixture_attest_envelope fixture_attest_collateral)
  (libraries venice sha2))
+
+(test
+ (name test_entropyx)
+ (modules test_entropyx)
+ (libraries venice unix))
+
+(test
+ (name test_sessx)
+ (modules test_sessx)
+ (libraries venice))
+
+; Copy the real pure session core against a scripted attestation
+; witness. Only the three opaque witness records are faked, so this
+; test runs the real revalidation, CPU-policy and admission legs.
+(rule
+ (targets sessx_admit_impl.ml)
+ (deps ../lib/sessx.ml)
+ (action
+  (with-stdout-to %{targets}
+   (progn (echo "open Sessx_admit_fakes\n") (cat %{deps})))))
+
+(test
+ (name test_sessx_admit)
+ (modules test_sessx_admit sessx_admit_fakes sessx_admit_impl)
+ (libraries venice))
+
+; Copy the real host orchestrator against test doubles for admission.
+; Entropy and Fresh remain the real implementation in this test.
+(rule
+ (targets session_boundary_impl.ml)
+ (deps ../lib/sessionx.ml)
+ (action
+  (with-stdout-to %{targets}
+   (progn (echo "open Session_boundary_fakes\n") (cat %{deps})))))
+
+(test
+ (name test_session_boundary)
+ (modules test_session_boundary session_boundary_fakes session_boundary_impl)
+ (libraries venice))
+
+; Exercise the exact entropy implementation against scripted Unix IO.
+(rule
+ (targets entropy_io_impl.ml)
+ (deps ../lib/entropyx.ml)
+ (action
+  (with-stdout-to %{targets}
+   (progn (echo "open Entropy_io_fakes\n") (cat %{deps})))))
+
+(test
+ (name test_entropy_io)
+ (modules test_entropy_io entropy_io_fakes entropy_io_impl)
+ (libraries venice unix))

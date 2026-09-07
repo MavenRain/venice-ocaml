@@ -210,11 +210,25 @@ let now_of_unix ~(seconds : int) : Derx.Now.t option =
       (padded l l.four year ^ padded l l.two month ^ padded l l.two day ^
        padded l l.two hour ^ padded l l.two minute ^ padded l l.two second)
 
+(* Reusable over real signed evidence even when its REPORTDATA belongs
+   to another deployment. This mints no attestation or session witness.
+   The signature witness is re-minted from the supplied quote, so the
+   signed 632-byte region is re-bound to the QE and ISV signatures on
+   every call. A caller cannot pair one quote with a foreign witness. *)
+let revalidate_evidence ~(now : Derx.Now.t) ~(collateral : Tcbx.Collateral.t)
+    ~(quote : Quotex.t) : (unit, Errx.t) result =
+  let* chain = Derx.verify_chain ~now
+    (Quotex.Signature_section.pem_chain (Quotex.signature_section quote)) in
+  let* signature = Sigx.verify ~pck_key:(Derx.pck_key chain) quote in
+  Result.map (fun (_ : Tcbx.t) -> ())
+    (Tcbx.verify ~now ~collateral ~chain ~quote ~sig_:signature)
+
 module Attested = struct
   type 'level t = {
     quote : Quotex.t; chain : Derx.t; signature : Sigx.t; tcb : Tcbx.t;
     policy : 'level Policyx.t; signing_key : Secpx.Pubkey.t; gpu : Gpu.t;
     model : string option; provider : string option; verified : bool option;
+    collateral : Tcbx.Collateral.t;
   }
   let quote (t : 'l t) : Quotex.t = t.quote
   let chain (t : 'l t) : Derx.t = t.chain
@@ -228,6 +242,11 @@ module Attested = struct
   let model (t : 'l t) : string option = t.model
   let tee_provider (t : 'l t) : string option = t.provider
   let verified_flag (t : 'l t) : bool option = t.verified
+
+  (* A witness can outlive its certificates or collateral. Recheck the
+     original signed inputs at the session caller's explicit instant. *)
+  let revalidate ~(now : Derx.Now.t) (t : 'l t) : (unit, Errx.t) result =
+    revalidate_evidence ~now ~collateral:t.collateral ~quote:t.quote
 end
 
 let verify ~(now : Derx.Now.t) ~(expect : 'l Policyx.Expect.t)
@@ -248,4 +267,4 @@ let verify ~(now : Derx.Now.t) ~(expect : 'l Policyx.Expect.t)
   let* gpu = gpu_check l ~nonce (Envelope.nvidia_payload envelope) in
   Ok { Attested.quote; chain; signature; tcb; policy; signing_key; gpu;
        model = Envelope.model envelope; provider = envelope.Envelope.provider;
-       verified = envelope.Envelope.verified }
+       verified = envelope.Envelope.verified; collateral }

@@ -43,7 +43,7 @@ module Drive = St.Make (F)
    mutant "skip-clear-pending" leaves that resumed continuation in the
    state ref, so the inner next resumes it a second time and the
    stdlib aborts the suite with Continuation_already_resumed: that
-   crash IS the kill, and no repo code raises anything. *)
+   crash IS the kill, and no lib code raises anything. *)
 let hook : (unit -> unit) ref = ref (fun (() : unit) -> ())
 
 module Probe = struct
