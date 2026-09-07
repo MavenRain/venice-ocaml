@@ -405,6 +405,43 @@ line below tagged `[live check pending]` closes the day it runs.
   16-byte tag before the ciphertext, is SUPERSEDED by the line above;
   M31 confirms the order on a live E2EE capture.  [live check pending]
 
+### M31 probe and replay status
+
+M31 adds `scripts/probe_e2ee.py` and `harness/diff_e2ee.py`. No live capture
+was made: `VENICE_API_KEY` was absent. `fixtures/e2ee_synthetic.json` is a
+locally generated protocol fixture with public test scalars, not a Venice
+receipt or an attestation witness. The live framing, receipt member names and
+exact signed byte sequence remain hypotheses until a real capture passes.
+
+The response frame layout and empty-AAD key schedule were rechecked against
+the [official guide, steps 4 through 6](https://docs.venice.ai/guides/features/tee-e2ee-models)
+on 2026-09-06. Each response frame derives its own key from its embedded
+server public key and the retained client scalar. The request prompt key
+cannot substitute for this response key.
+
+The pinned [producer streaming implementation](https://github.com/nearai/private-ml-sdk/blob/25c25025c556ab2f797eeda3bab433f38a8ffb7a/vllm-proxy/src/app/api/v1/openai.py#L80)
+hashes the original request bytes and every UTF-8-encoded text chunk yielded
+by its upstream stream. Thus the probe tests the complete HTTP response body,
+including SSE framing, whitespace and `[DONE]`. It never reserializes JSON or
+hashes only decrypted content, and sends no `X-Request-Hash` override. Whether
+Venice rewrites this stream is unconfirmed; a mismatch fails the probe rather
+than selecting a different hashing formula.
+
+The producer's [receipt route](https://github.com/nearai/private-ml-sdk/blob/25c25025c556ab2f797eeda3bab433f38a8ffb7a/vllm-proxy/src/app/api/v1/openai.py#L301)
+returns `text`, `signature`, `signing_address` and `signing_algo`. The local
+oracle checks those fields, the colon-joined request and response hashes,
+ECDSA personal-sign with signer recovery, and raw Ed25519 signatures. The
+live E2EE driver uses ECDSA. The request ID selects the receipt route; it is
+not appended as a third signed field. A changed request or response must
+fail against the original receipt.
+
+The diagnostic sends only a fixed public prompt. Its nonce, signing-key and
+REPORTDATA checks establish structural consistency, not trusted TEE admission.
+It does not discharge M29's CPU-only deployment assertion, current collateral,
+CRL or NRAS requirements. Live captures retain public protocol bytes only;
+receipt verification is replayable, while GCM authentication is checked in
+memory before the ephemeral scalar is discarded.
+
 ## Streaming (SSE)
 - /chat/completions 200 declares application/json only (swagger
   6432-6452);  the file has no text/event-stream, no chunk schema, zero

@@ -109,6 +109,12 @@ fi
 "$py" -I "$here/harness/diff_encrypt.py"
 "$py" -I "$here/harness/test_diff_encrypt.py"
 
+# M31 uses synthetic transcripts and fake transport only. Live probes are
+# explicit commands and never run as part of this gate.
+"$py" -I "$here/harness/diff_e2ee.py"
+"$py" -I "$here/harness/test_diff_e2ee.py"
+"$py" -I "$here/harness/test_probe_e2ee.py"
+
 # Model check + correspondence (M35..M37).
 if [ -x "$here/model/check.sh" ]; then
   "$here/model/check.sh"

@@ -250,3 +250,27 @@ The signed quote uses Phala's binding, so the envelope must fail at the
 policy address check.  Painting that binding instead fails the ISV
 signature check.  A real M31 capture is still required to demonstrate a
 successful Venice pipeline;  live wire claims remain unconfirmed.
+
+## M31 synthetic E2EE transcript
+
+`e2ee_synthetic.json` is generated locally from public test scalars and fixed
+messages. It is not a live Venice roundtrip. The fixture exercises request
+encryption, independent response-frame key agreement, tag-last GCM framing,
+exact request/SSE hashing, ECDSA personal-sign receipts and raw Ed25519
+receipts. `python3 -I harness/diff_e2ee.py` recomputes its cryptographic
+relationships. No third-party capture or account data is copied into it.
+
+`scripts/probe_e2ee.py MODEL OUTPUT` can produce a separate live protocol
+capture when `VENICE_API_KEY` is available. It sends the fixed public prompt
+`Reply with the single word VENICE.` and saves only after every frame and
+receipt passes. It excludes credentials, private scalars, derived keys,
+decrypted output and raw HTTP headers. The output path is exclusive and the
+file is created with mode 0600. No successful live capture is committed here.
+
+Run `python3 -I harness/diff_e2ee.py OUTPUT` to replay the public evidence.
+The exact encrypted request and SSE bytes must remain unchanged, since any
+redaction inside those bytes invalidates the receipt. Public metadata is
+allowlisted separately. The live scalar is not saved, so offline replay can
+verify the receipt and frame structure but cannot repeat GCM authentication.
+Neither the synthetic fixture nor this diagnostic mints an SDK attestation
+or proves that inference ran inside a trusted CPU or GPU enclave.

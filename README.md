@@ -126,6 +126,26 @@ Venice session is covered by the current fixtures. The cryptographic
 implementation does not provide a blanket constant-time guarantee; secret
 zeroization remains planned hardening work.
 
+M31 provides a protocol diagnostic for a fixed public prompt:
+
+```sh
+python3 -I scripts/probe_e2ee.py MODEL /tmp/venice-e2ee-capture.json
+python3 -I harness/diff_e2ee.py /tmp/venice-e2ee-capture.json
+```
+
+Set `VENICE_API_KEY` in the environment before running the probe. It checks
+model capability, encrypts the public prompt, authenticates encrypted response
+frames and checks the receipt against the exact request and SSE bytes. It
+writes a capture only after these checks pass. Credentials, private keys and
+decrypted output are excluded. The output path must not already exist.
+
+This independent Python diagnostic does not establish an OCaml `Session` or
+verify full TDX, TCB, measurement or GPU trust. Its fixture is synthetic, and
+live confirmation is still pending. Replaying a live capture verifies receipt
+signatures and frame structure; repeating GCM authentication would require the
+discarded client scalar. See [validation/m31.md](validation/m31.md) for scope
+and [fixtures/README.md](fixtures/README.md) for provenance.
+
 See the milestone roadmap and current limitations in [DESIGN.md](DESIGN.md).
 The package metadata describes the intended architecture; this README describes
 the capabilities currently available to SDK users.
