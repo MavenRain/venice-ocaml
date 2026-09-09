@@ -109,8 +109,10 @@ val make :
    even over clean framing, because a mid-completion cut is
    detectable even when the transport reports success. Allow_eof
    accepts a clean EOF after any number of payloads but still
-   rejects the four Machine residues; M32 E2EE composes with
-   Allow_eof until the M31 capture pins the E2EE terminator. *)
+   rejects the four Machine residues. M32 E2EE defaults to
+   Require_done because the synthetic M31 fixture terminates with
+   [DONE]. The live E2EE terminator stays unconfirmed, so
+   Session.Stream.run takes closing as well. *)
 
 val feed : t -> string -> (t * event list, Errx.t) result
 (* A payload equal to "[DONE]" (exact match after the one-space

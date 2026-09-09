@@ -11,6 +11,9 @@ module Hexx = Venice__Hexx
 module Chatx = Venice__Chatx
 module Httpx = Venice__Httpx
 module Encryptx = Venice__Encryptx
+module Decryptx = Venice__Decryptx
+module Streamx = Venice__Streamx
+module Ssex = Venice__Ssex
 
 module Modelx = struct
   type e2ee = |
@@ -34,6 +37,7 @@ module Sessx = struct
     model : string;
     client_key : Secpx.Pubkey.t;
     cipher_key : Gcmx.Key.t;
+    secret : Secpx.Scalar.t;
   }
 
   let admit ~(cpu_only : Cpu_only.t) ~(now : Derx.Now.t)
@@ -51,7 +55,7 @@ module Sessx = struct
     let* bytes = Hexx.decode (peer_hex ()) in
     let* peer = Option.to_result ~none:(Errx.Session_invalid "test peer")
       (Secpx.Pubkey.of_bytes bytes) in
-    Result.map (fun cipher_key -> { model; client_key; cipher_key })
+    Result.map (fun cipher_key -> { model; client_key; cipher_key; secret = scalar })
       (Venice__Sessx.derive_key ~scalar ~peer)
 
   let client_pubkey_hex (t : 'c t) : string =
@@ -59,4 +63,5 @@ module Sessx = struct
   let model_pubkey_hex (_ : 'c t) : string = peer_hex ()
   let model_id (t : 'c t) : string = t.model
   let key (t : 'c t) : Gcmx.Key.t = t.cipher_key
+  let scalar (t : 'c t) : Secpx.Scalar.t = t.secret
 end

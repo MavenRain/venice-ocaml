@@ -273,6 +273,16 @@
  (modules test_encryptx)
  (libraries venice))
 
+(rule
+ (targets fixture_decrypt.ml)
+ (deps ../fixtures/e2ee_synthetic.json)
+ (action (with-stdout-to %{targets} (run %{exe:embed.exe} %{deps}))))
+
+(test
+ (name test_decryptx)
+ (modules test_decryptx fixture_decrypt)
+ (libraries venice))
+
 ; Exercise the production host encryption boundary with scripted admission
 ; evidence. Key derivation, entropy, nonce state and encryption remain real.
 (rule
@@ -284,8 +294,13 @@
 
 (test
  (name test_encrypt_boundary)
- (modules test_encrypt_boundary encrypt_boundary_fakes encrypt_boundary_impl)
+ (modules test_encrypt_boundary encrypt_boundary_fakes encrypt_boundary_impl fixture_decrypt_host)
  (libraries venice unix))
+
+(rule
+ (targets fixture_decrypt_host.ml)
+ (deps ../fixtures/e2ee_synthetic.json)
+ (action (with-stdout-to %{targets} (run %{exe:embed.exe} %{deps}))))
 
 (test
  (name test_sessx)

@@ -98,7 +98,7 @@ module Make (T : S) = struct
   let drain_reads (() : unit) : int = 4096
   let drain_bytes (() : unit) : int = 1_048_576
 
-  let run ?closing ?max_line_bytes ?max_event_bytes (body : T.body)
+  let run_decoded ~decode ?closing ?max_line_bytes ?max_event_bytes (body : T.body)
       (consume : cursor -> 'a) : 'a * outcome =
     (* The ONE ref of the unit. *)
     let st =
@@ -169,7 +169,7 @@ module Make (T : S) = struct
           ~ok:(fun (c : Ssex.Chunk.t) ->
             Effect.perform (Delta c);
             dispatch m ph tl)
-          (Ssex.Chunk.of_string payload)
+          (decode payload)
     and pump (m : Ssex.t) (ph : phase) : outcome =
       match ph with
       | Before_done -> read_step m Before_done
@@ -255,4 +255,8 @@ module Make (T : S) = struct
         let (_ : outcome) = release (!st).settled in
         ())
       drive_then_consume
+
+  let run ?closing ?max_line_bytes ?max_event_bytes body consume =
+    run_decoded ~decode:Ssex.Chunk.of_string ?closing ?max_line_bytes
+      ?max_event_bytes body consume
 end

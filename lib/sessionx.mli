@@ -18,6 +18,15 @@ val encrypt : fresh:Entropyx.Gcm_fresh.t -> 'c t -> string ->
 
 (* Validate the entire chat before drawing one nonce per message. No
    partial request is returned. The result is immutable and can be sent
-   through the existing transport; response decryption belongs to M32. *)
+   through the existing transport and decoded with Stream below. *)
 val request : entropy:Entropyx.t -> 'c t -> 'c Chatx.t ->
   (Httpx.Request.t, Errx.t) result
+
+(* GCM-checked chunks, not receipt-verified responses. Requires DONE:
+   closing defaults to Require_done. A caller that meets a clean EOF
+   passes ~closing:Ssex.Allow_eof.
+   Earlier chunks may have been consumed when a later frame fails. *)
+module Stream (T : Streamx.S) : sig
+  val run : ?closing:Ssex.closing -> ?max_line_bytes:int -> ?max_event_bytes:int ->
+    'c t -> T.body -> (Streamx.cursor -> 'a) -> 'a * Streamx.outcome
+end

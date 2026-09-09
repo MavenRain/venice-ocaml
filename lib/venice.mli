@@ -1842,8 +1842,23 @@ module Session : sig
      Forces streaming and E2EE on and web/X search and scraping off.
      Sampling options and routing metadata remain visible on the wire.
      No partial request is returned if encryption or entropy fails.
-     Send the result through Transport; encrypted response handling
-     remains M32. Retransmission reuses the sealed bytes, never reseals. *)
+     Send the result through Transport and decode with Session.Stream.
+     Retransmission reuses the sealed bytes, never reseals. *)
   val request : entropy:Entropy.t -> 'c t -> 'c Chat.t ->
     (Http.Request.t, Error.t) result
+
+  (* Authenticate nonempty content and reasoning frames before yielding
+     chunks. An empty or null frame field is metadata and is not
+     authenticated. closing defaults to Require_done, so the stream
+     requires [DONE]; pass ~closing:Sse.Allow_eof for a clean EOF.
+     Closes the body exactly once on every exit and invalidates the
+     cursor. Inspect the outcome even after collect.
+     GCM success does not establish the attested signer's identity:
+     receipt verification, replay and ordering protection remain M33.
+     Metadata is unverified. Earlier chunks can escape before a later
+     failure; applications must treat them as provisional. *)
+  module Stream (T : Transport.S) : sig
+    val run : ?closing:Sse.closing -> ?max_line_bytes:int -> ?max_event_bytes:int ->
+      'c t -> T.body -> (Stream.cursor -> 'a) -> 'a * Stream.outcome
+  end
 end

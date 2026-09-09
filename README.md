@@ -108,7 +108,22 @@ secp256k1 keypair and an opaque AES key through ECDH and HKDF-SHA256.
 It validates the complete chat before drawing entropy, encrypts each user or
 system text message with its own nonce, and assembles streaming and E2EE
 settings and the attested public-key headers. Send the immutable result through
-`Transport`. Response decryption and encrypted streaming remain planned work.
+`Transport`. Apply `Session.Stream` to that transport, then call
+`run session body consume` to read GCM-checked chunks through the existing
+stream cursor. Nonempty content and reasoning frames are authenticated before
+each chunk is yielded. The stream requires `[DONE]` by default, rejects
+identity changes, and closes the body on completion, failure or an early
+consumer exit. Pass `~closing:Sse.Allow_eof` when a stream ends at a clean
+EOF.
+
+Always inspect the returned stream outcome. Chunks are provisional: GCM alone
+does not establish the attested signer's identity or protect transcript order
+and freshness. Receipt verification remains M33 work. An active network
+attacker can replace a content or reasoning frame with `""` or `null`, or drop
+a whole chunk. The decoder accepts a blanked field as metadata, so deletion and
+truncation stay undetectable until M33 receipt verification. A later failure
+cannot retract chunks already consumed. The implementation follows the
+synthetic M31 fixture; successful live interoperability remains unconfirmed.
 
 This first request path accepts bare-string user/system content without names.
 Other roles, multipart content, tools, schemas, stop strings, cache keys,

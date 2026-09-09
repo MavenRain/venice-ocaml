@@ -65,6 +65,12 @@ val collect : cursor -> (Accx.final, Errx.t) result
    which leaves the run a Cut. *)
 
 module Make (T : S) : sig
+  (* Internal M32 seam. The same bracket authenticates before yielding. *)
+  val run_decoded :
+    decode:(string -> (Ssex.Chunk.t, Errx.t) result) ->
+    ?closing:Ssex.closing -> ?max_line_bytes:int -> ?max_event_bytes:int ->
+    T.body -> (cursor -> 'a) -> 'a * outcome
+
   val run :
     ?closing:Ssex.closing ->
     ?max_line_bytes:int ->

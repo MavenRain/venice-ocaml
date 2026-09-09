@@ -62,3 +62,17 @@ let request ~(entropy : Entropyx.t) (session : 'c t) (chat : 'c Chatx.t) :
     (Ok []) (Encryptx.plaintexts plan) in
   Encryptx.finish ~client_pubkey_hex:(client_pubkey_hex session)
     ~model_pubkey_hex:(model_pubkey_hex session) plan (List.rev reversed)
+
+module Stream (T : Streamx.S) = struct
+  module Driver = Streamx.Make (T)
+  let run ?closing ?max_line_bytes ?max_event_bytes session body consume =
+    let state = ref (Decryptx.make ~scalar:(Sessx.scalar session.core)
+      ~model_id:(model_id session)) in
+    let decode payload =
+      Result.map (fun (next, chunk) -> state := next; chunk)
+        (Decryptx.step !state payload) in
+    Driver.run_decoded
+      ~decode
+      ~closing:(Option.value ~default:Ssex.Require_done closing)
+      ?max_line_bytes ?max_event_bytes body consume
+end

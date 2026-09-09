@@ -303,8 +303,67 @@ let request_checks : (string * bool) list =
                     | [sent] -> truthful_headers session sent && request_body session sent
                     | [] | _ :: _ :: _ -> false))))) } ) ]
 
+module Decrypt_stream = S.Stream (Fake)
+
+(* Replace the first occurrence of needle, through total accessors. *)
+let replace source needle replacement =
+  let rec loop offset =
+    Option.fold ~none:(fun () -> source) ~some:(fun found () ->
+      if String.equal found needle then
+        Option.value ~default:"" (B.take source 0 offset) ^ replacement ^
+        Option.value ~default:"" (B.take source (offset + String.length needle)
+          (String.length source - offset - String.length needle))
+      else loop (offset + 1))
+      (B.take source offset (String.length needle)) () in
+  loop 0
+
+let without_done wire = replace wire "data: [DONE]\n\n" ""
+
+let response_run ?(transform = Fun.id) scalar model =
+  let entropy = E.Fake.make [draw 'a'; String.make 31 '\000' ^ B.of_codes [scalar]] in
+  let* session = make_session ~entropy ~model in
+  let* fixture = J.parse (Fixture_decrypt_host.bytes ()) in
+  let* hex = Option.to_result ~none:(R.Session_invalid "test fixture")
+    (Option.bind (J.member "response_body_hex" fixture) J.as_string) in
+  let* wire = Result.map transform (H.decode hex) in
+  let* key = Venice__Keyx.make "test" in
+  let* request = Http.Request.get Http.Route.models in
+  let transport = Fake.make [Fake.exchange
+    ~head:"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\r\n"
+    ~chunks:[wire] ()] in
+  let* _, body = Fake.send transport ~key request in
+  let contents, outcome = Decrypt_stream.run session body (fun cursor ->
+    Venice__Streamx.fold cursor ~init:[] ~f:(fun acc chunk ->
+      acc @ List.concat_map (fun choice ->
+        let delta = Venice__Ssex.Chunk.Choice.delta choice in
+        List.filter_map Fun.id [Venice__Ssex.Chunk.Delta.content delta;
+          Venice__Ssex.Chunk.Delta.reasoning_content delta])
+        (Venice__Ssex.Chunk.choices chunk))) in
+  Ok (contents, outcome, Fake.closes body)
+
+let response_checks = [
+  "host response: session scalar decrypts independent fixture",
+    check_ok (response_run 3 "SYNTHETIC-model") (function
+      | ["Synthetic answer."; "Synthetic reasoning."], Venice__Streamx.Complete, 1 -> true
+      | _, (Venice__Streamx.Complete | Venice__Streamx.Cut | Venice__Streamx.Failed _), _ -> false);
+  "host response: wrong session key releases no plaintext",
+    check_ok (response_run 4 "SYNTHETIC-model") (function
+      | [], Venice__Streamx.Failed (R.Session_invalid "response authentication"), 1 -> true
+      | _, (Venice__Streamx.Complete | Venice__Streamx.Cut | Venice__Streamx.Failed _), _ -> false);
+  "host response: session model mismatch releases no plaintext",
+    check_ok (response_run 3 "wrong-model") (function
+      | [], Venice__Streamx.Failed (R.Session_invalid "response model"), 1 -> true
+      | _, (Venice__Streamx.Complete | Venice__Streamx.Cut | Venice__Streamx.Failed _), _ -> false);
+  (* The host path defaults to Require_done, so a stream that stops at a
+     clean EOF fails. *)
+  "host response: a stream without DONE fails",
+    check_ok (response_run ~transform:without_done 3 "SYNTHETIC-model") (function
+      | _, Venice__Streamx.Failed _, 1 -> true
+      | _, (Venice__Streamx.Complete | Venice__Streamx.Cut | Venice__Streamx.Failed _), _ -> false)
+]
+
 let () =
-  let checks = encryption_checks @ concurrency_checks @ request_checks in
+  let checks = encryption_checks @ concurrency_checks @ request_checks @ response_checks in
   let bad = List.filter (fun ((_ : string), ok) -> not ok) checks in
   List.iter (fun (name, (_ : bool)) -> print_endline ("FAIL " ^ name)) bad;
   Printf.printf "%d/%d ok\n" (List.length checks - List.length bad) (List.length checks);
